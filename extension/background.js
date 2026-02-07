@@ -383,32 +383,79 @@ async function doEval(params) {
   const code = params.code;
   if (!code) throw new Error("Missing 'code' parameter");
   const tab = await activeTab();
+
+  // Strategy 1: MAIN world <script> tag injection.
+  // Fast path — works on most sites without strict CSP.
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: (userCode) => {
-      // Use <script> tag injection instead of direct eval().
-      // script.textContent is not a Trusted Types sink, so this also works
-      // on pages with Trusted Types CSP (e.g. Google Gemini, YouTube) where
-      // direct eval() is blocked.
       const key = "__bctl_r_" + Math.random().toString(36).slice(2);
       const script = document.createElement("script");
+      // textContent is not a Trusted Types sink, bypassing
+      // require-trusted-types-for 'script' policies.
       script.textContent =
-        "try{window[\"" + key + "\"]={v:(0,eval)(" + JSON.stringify(userCode) + ")}}" +
-        "catch(_e){window[\"" + key + "\"]={e:_e.message||String(_e)}}";
+        "try{window['" + key + "']={v:(0,eval)(" + JSON.stringify(userCode) + ")}}" +
+        "catch(e){window['" + key + "']={e:e.message||String(e)}}";
       (document.head || document.documentElement).appendChild(script);
       script.remove();
       const r = window[key];
       delete window[key];
-      if (!r) return { value: undefined };
+      if (!r) return null; // CSP blocked — fall through to debugger
       if (r.e !== undefined) return { error: r.e };
-      return { value: r.v };
+      return { value: r.v, ok: true };
     },
     args: [code],
     world: "MAIN",
   });
+
   const r = results[0]?.result;
+  if (r && r.ok) return { result: r.value ?? null };
   if (r && r.error) throw new Error(r.error);
-  return { result: r?.value ?? null };
+
+  // Strategy 2: Chrome DevTools Protocol via chrome.debugger.
+  // Fallback for strict-CSP pages (YouTube, Google, etc.) where script
+  // injection is blocked. Runtime.evaluate bypasses all CSP restrictions.
+  return await evalViaDebugger(tab.id, code);
+}
+
+async function evalViaDebugger(tabId, code) {
+  try {
+    await chrome.debugger.attach({ tabId }, "1.3");
+  } catch (e) {
+    // Already attached (DevTools open?) or restricted page
+    if (e.message?.includes("Another debugger")) {
+      throw new Error("eval: cannot attach debugger (DevTools may be open). Close DevTools and retry, or use 'bctl select'/'bctl text' for DOM queries.");
+    }
+    throw new Error("eval: cannot attach debugger — " + (e.message || e));
+  }
+
+  try {
+    const result = await chrome.debugger.sendCommand(
+      { tabId },
+      "Runtime.evaluate",
+      {
+        expression: code,
+        returnByValue: true,
+        awaitPromise: false,
+      }
+    );
+
+    if (result.exceptionDetails) {
+      const desc =
+        result.exceptionDetails.exception?.description ||
+        result.exceptionDetails.text ||
+        "Evaluation failed";
+      throw new Error(desc);
+    }
+
+    return { result: result.result?.value ?? null };
+  } finally {
+    try {
+      await chrome.debugger.detach({ tabId });
+    } catch (_) {
+      // ignore detach errors
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

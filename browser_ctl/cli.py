@@ -5,10 +5,14 @@ Zero external dependencies (stdlib only). Communicates with the bridge server
 via HTTP POST to localhost:19876/command.
 """
 
+from __future__ import annotations
+
 import argparse
 import base64
 import json
 import os
+import platform
+import shutil
 import signal
 import subprocess
 import sys
@@ -20,6 +24,13 @@ import urllib.request
 DEFAULT_PORT = 19876
 SERVER_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 PID_FILE = os.path.join(tempfile.gettempdir(), f"bctl-{DEFAULT_PORT}.pid")
+
+BCTL_HOME = os.path.join(os.path.expanduser("~"), ".browser-ctl")
+
+SKILL_TARGETS = {
+	"cursor": os.path.join(os.path.expanduser("~"), ".cursor", "skills-cursor"),
+	"opencode": os.path.join(os.path.expanduser("~"), ".config", "opencode", "skills"),
+}
 
 # ---------------------------------------------------------------------------
 # Server management
@@ -201,6 +212,15 @@ def build_parser() -> argparse.ArgumentParser:
 	sub.add_parser("ping", help="Check server and extension status")
 	sub.add_parser("stop", help="Stop bridge server")
 
+	# -- Setup --
+	p = sub.add_parser("setup", help="Install Chrome extension and AI coding skill")
+	p.add_argument(
+		"target",
+		nargs="?",
+		default=None,
+		help="Skill target: cursor, opencode, or a custom directory path",
+	)
+
 	return parser
 
 
@@ -233,6 +253,114 @@ def handle_serve(args):
 	os.execvp(sys.executable, [sys.executable, "-m", "browser_ctl.server", "--port", str(DEFAULT_PORT)])
 
 
+def _get_extension_source_dir() -> str | None:
+	"""Locate the extension source directory (from project root)."""
+	pkg_dir = os.path.dirname(os.path.abspath(__file__))
+	project_root = os.path.dirname(pkg_dir)
+	ext_dir = os.path.join(project_root, "extension")
+	if os.path.isdir(ext_dir) and os.path.exists(os.path.join(ext_dir, "manifest.json")):
+		return ext_dir
+	return None
+
+
+def _install_extension() -> str | None:
+	"""Copy extension to ~/.browser-ctl/extension/ and try to open Chrome extensions page."""
+	src = _get_extension_source_dir()
+	if not src:
+		return None
+
+	dest = os.path.join(BCTL_HOME, "extension")
+	if os.path.exists(dest):
+		shutil.rmtree(dest)
+	shutil.copytree(src, dest)
+
+	# Try to open Chrome extensions page
+	system = platform.system()
+	try:
+		if system == "Darwin":
+			subprocess.Popen(
+				["open", "-a", "Google Chrome", "chrome://extensions"],
+				stdout=subprocess.DEVNULL,
+				stderr=subprocess.DEVNULL,
+			)
+		elif system == "Linux":
+			for cmd in ["google-chrome", "chromium", "chromium-browser"]:
+				try:
+					subprocess.Popen(
+						[cmd, "chrome://extensions"],
+						stdout=subprocess.DEVNULL,
+						stderr=subprocess.DEVNULL,
+					)
+					break
+				except FileNotFoundError:
+					continue
+	except Exception:
+		pass
+
+	return dest
+
+
+def _install_skill(target_dir: str) -> str:
+	"""Copy SKILL.md into <target_dir>/browser-ctl/."""
+	src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SKILL.md")
+	if not os.path.isfile(src):
+		raise FileNotFoundError("SKILL.md not found in browser_ctl package.")
+
+	skill_dir = os.path.join(target_dir, "browser-ctl")
+	os.makedirs(skill_dir, exist_ok=True)
+	skill_path = os.path.join(skill_dir, "SKILL.md")
+	# Remove existing file/symlink before copying
+	if os.path.lexists(skill_path):
+		os.remove(skill_path)
+	shutil.copy2(src, skill_path)
+	return skill_path
+
+
+def handle_setup(args):
+	"""Install Chrome extension and/or AI coding skill."""
+	print("browser-ctl setup")
+	print("=" * 40)
+
+	# --- Extension ---
+	ext_dir = _install_extension()
+	if ext_dir:
+		print(f"\n[extension] installed -> {ext_dir}")
+		print()
+		print("  Load in Chrome:")
+		print("    1. Open chrome://extensions")
+		print("    2. Enable 'Developer mode' (top right)")
+		print("    3. Click 'Load unpacked'")
+		print(f"    4. Select: {ext_dir}")
+	else:
+		print("\n[extension] source not found")
+		print("  Make sure you are running from a source checkout or dev install.")
+
+	# --- Skill ---
+	if args.target:
+		target = args.target
+		if target in SKILL_TARGETS:
+			target_dir = SKILL_TARGETS[target]
+			label = target
+		else:
+			target_dir = os.path.expanduser(target)
+			label = target_dir
+
+		try:
+			skill_path = _install_skill(target_dir)
+			print(f"\n[skill] installed ({label}) -> {skill_path}")
+		except FileNotFoundError as e:
+			print(f"\n[skill] error: {e}")
+	else:
+		print("\n[skill] skipped (no target specified)")
+		print()
+		print("  Available targets:")
+		for name, path in SKILL_TARGETS.items():
+			print(f"    bctl setup {name:10s}  ->  {path}/browser-ctl/SKILL.md")
+		print(f"    bctl setup <path>       ->  <path>/browser-ctl/SKILL.md")
+
+	print()
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -260,7 +388,10 @@ def main():
 	if cmd in ("dl",):
 		cmd = "download"
 
-	# Server management
+	# Local-only commands (no server needed)
+	if cmd == "setup":
+		handle_setup(args)
+		return
 	if cmd == "serve":
 		handle_serve(args)
 		return

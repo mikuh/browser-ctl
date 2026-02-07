@@ -17,3 +17,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["browser_ctl*"]
+
+[tool.setuptools.package-data]
+browser_ctl = ["SKILL.md"]
