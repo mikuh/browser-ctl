@@ -211,6 +211,10 @@ async function handleAction(action, params) {
     case "drag":
       return await runInPage("drag", params);
 
+    // -- Batch (multiple content-script ops in a single executeScript) --
+    case "batch":
+      return await doBatch(params);
+
     default:
       throw new Error(`Unknown action: ${action}`);
   }
@@ -640,9 +644,8 @@ async function doDialog(params) {
 // ---------------------------------------------------------------------------
 
 /**
- * Run a DOM operation in the active tab via chrome.scripting.executeScript.
- * The content.js logic is inlined here to avoid needing a separate content script file
- * that must be declared in manifest.json.
+ * Run a single DOM operation in the active tab.
+ * Wraps the command as a 1-element batch and extracts the first result.
  */
 async function runInPage(op, params) {
   const tab = await activeTab();
@@ -650,51 +653,85 @@ async function runInPage(op, params) {
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: contentScriptHandler,
-    args: [op, params],
+    args: [[{ op, params }]],
   });
 
-  const r = results[0]?.result;
-  if (!r) throw new Error("Content script returned no result");
-  if (r.error) throw new Error(r.error);
+  const arr = results[0]?.result;
+  if (!arr || !arr.length) throw new Error("Content script returned no result");
+  const r = arr[0];
+  if (!r.success) throw new Error(r.error || "Content script operation failed");
   return r.data;
 }
 
 /**
+ * Execute multiple DOM operations in a single executeScript call.
+ * Called by the "batch" action — receives {commands: [{action, params}, ...]}.
+ */
+async function doBatch(params) {
+  const commands = params.commands || [];
+  if (!commands.length) return { results: [] };
+
+  const tab = await activeTab();
+
+  // Map {action, params} to {op, params} for the content script
+  const ops = commands.map((c) => ({ op: c.action, params: c.params }));
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: contentScriptHandler,
+    args: [ops],
+  });
+
+  const arr = results[0]?.result;
+  if (!arr) throw new Error("Batch content script returned no result");
+  return { results: arr };
+}
+
+/**
+ * Unified content-script handler — executes one or more DOM operations
+ * inside the page context via a single chrome.scripting.executeScript call.
+ *
+ * @param {Array<{op: string, params: object}>} commands
+ * @returns {Array<{success: boolean, data?: object, error?: string}>}
+ *
  * This function is serialized and injected into the page.
  * It CANNOT reference any variables from the outer scope.
  */
-function contentScriptHandler(op, params) {
-  try {
-    function qs(selector, index, textFilter) {
-      if (!selector) return document.body;
-      let candidates = Array.from(document.querySelectorAll(selector));
-      if (candidates.length === 0) throw new Error(`Element not found: ${selector}`);
+async function contentScriptHandler(commands) {
+  // -- Helper: query element by CSS selector with optional text filter --
+  function qs(selector, index, textFilter) {
+    if (!selector) return document.body;
+    let candidates = Array.from(document.querySelectorAll(selector));
+    if (candidates.length === 0) throw new Error(`Element not found: ${selector}`);
 
-      // Filter by visible text content (substring match, case-insensitive)
-      if (textFilter) {
-        const lower = textFilter.toLowerCase();
-        candidates = candidates.filter(el => {
-          const t = (el.innerText || el.textContent || "").toLowerCase();
-          return t.includes(lower);
-        });
-        if (candidates.length === 0) throw new Error(`No element matching "${selector}" contains text "${textFilter}"`);
-      }
-
-      if (index !== undefined && index !== null) {
-        if (index < 0) index = candidates.length + index;
-        if (index >= candidates.length) throw new Error(`Index ${index} out of range (found ${candidates.length} elements for: ${selector})`);
-        return candidates[index];
-      }
-      return candidates[0];
+    if (textFilter) {
+      const lower = textFilter.toLowerCase();
+      candidates = candidates.filter((el) => {
+        const t = (el.innerText || el.textContent || "").toLowerCase();
+        return t.includes(lower);
+      });
+      if (candidates.length === 0)
+        throw new Error(`No element matching "${selector}" contains text "${textFilter}"`);
     }
 
+    if (index !== undefined && index !== null) {
+      if (index < 0) index = candidates.length + index;
+      if (index >= candidates.length)
+        throw new Error(`Index ${index} out of range (found ${candidates.length} elements for: ${selector})`);
+      return candidates[index];
+    }
+    return candidates[0];
+  }
+
+  // -- Execute a single DOM operation (synchronous) --
+  function executeOp(op, params) {
     switch (op) {
       case "click": {
         const el = qs(params.selector, params.index, params.text);
         el.scrollIntoView({ block: "center", behavior: "instant" });
         el.click();
         const total = params.selector ? document.querySelectorAll(params.selector).length : 1;
-        return { data: { clicked: params.selector || "body", index: params.index ?? 0, total, text: params.text || null } };
+        return { clicked: params.selector || "body", index: params.index ?? 0, total, text: params.text || null };
       }
 
       case "hover": {
@@ -703,7 +740,7 @@ function contentScriptHandler(op, params) {
         el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true }));
         el.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false, cancelable: true }));
         el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
-        return { data: { hovered: params.selector, text: params.text || null } };
+        return { hovered: params.selector, text: params.text || null };
       }
 
       case "type": {
@@ -711,10 +748,6 @@ function contentScriptHandler(op, params) {
         el.focus();
         const text = params.text || "";
         if ("value" in el) {
-          // Use the native HTMLInputElement/HTMLTextAreaElement value setter
-          // to bypass React's synthetic property override. React intercepts
-          // the 'value' property via Object.defineProperty; calling the
-          // original prototype setter ensures React sees the change.
           const proto = el instanceof HTMLTextAreaElement
             ? HTMLTextAreaElement.prototype
             : HTMLInputElement.prototype;
@@ -731,7 +764,7 @@ function contentScriptHandler(op, params) {
         } else {
           el.textContent = text;
         }
-        return { data: { typed: text, selector: params.selector } };
+        return { typed: text, selector: params.selector };
       }
 
       case "press": {
@@ -741,50 +774,41 @@ function contentScriptHandler(op, params) {
         const cancelled = !target.dispatchEvent(new KeyboardEvent("keydown", opts));
         target.dispatchEvent(new KeyboardEvent("keypress", opts));
         target.dispatchEvent(new KeyboardEvent("keyup", opts));
-        // Trigger browser-native default actions that synthetic events skip
         if (!cancelled && key === "Enter") {
           const form = target.closest && target.closest("form");
           if (form) {
-            // requestSubmit() fires "submit" event and runs validation, unlike form.submit()
-            if (typeof form.requestSubmit === "function") {
-              form.requestSubmit();
-            } else {
-              form.submit();
-            }
+            if (typeof form.requestSubmit === "function") form.requestSubmit();
+            else form.submit();
           } else if (target.tagName === "A" && target.href) {
             target.click();
           }
         }
         if (!cancelled && key === "Escape") {
-          // Close any open details/dialog element
           const dialog = document.querySelector("dialog[open]");
           if (dialog && typeof dialog.close === "function") dialog.close();
         }
-        return { data: { pressed: key } };
+        return { pressed: key };
       }
 
       case "text": {
         const el = qs(params.selector);
-        return { data: { text: el.innerText } };
+        return { text: el.innerText };
       }
 
       case "html": {
         const el = qs(params.selector);
-        return { data: { html: el.innerHTML } };
+        return { html: el.innerHTML };
       }
 
       case "attr": {
         const el = qs(params.selector, params.index);
         const name = params.name;
         if (!name) {
-          // Return all attributes
           const attrs = {};
-          for (const a of el.attributes) {
-            attrs[a.name] = a.value;
-          }
-          return { data: { attributes: attrs } };
+          for (const a of el.attributes) attrs[a.name] = a.value;
+          return { attributes: attrs };
         }
-        return { data: { [name]: el.getAttribute(name) } };
+        return { [name]: el.getAttribute(name) };
       }
 
       case "select": {
@@ -796,10 +820,8 @@ function contentScriptHandler(op, params) {
         for (let i = 0; i < Math.min(els.length, limit); i++) {
           const el = els[i];
           const item = { index: i, tag: el.tagName.toLowerCase() };
-          // Include useful text (truncated)
           const text = (el.innerText || el.textContent || "").trim();
           if (text) item.text = text.substring(0, 200);
-          // Include key attributes
           if (el.id) item.id = el.id;
           if (el.className && typeof el.className === "string") item.class = el.className;
           if (el.href) item.href = el.href;
@@ -808,20 +830,19 @@ function contentScriptHandler(op, params) {
           if (el.getAttribute("data-test-id")) item.testId = el.getAttribute("data-test-id");
           items.push(item);
         }
-        return { data: { selector, total: els.length, items } };
+        return { selector, total: els.length, items };
       }
 
       case "count": {
         const selector = params.selector;
         if (!selector) throw new Error("Missing 'selector' parameter");
-        const count = document.querySelectorAll(selector).length;
-        return { data: { selector, count } };
+        return { selector, count: document.querySelectorAll(selector).length };
       }
 
       case "extractUrl": {
         const el = qs(params.selector, params.index);
         const url = el.src || el.href || el.getAttribute("data-src") || el.currentSrc || null;
-        return { data: { url, tag: el.tagName.toLowerCase() } };
+        return { url, tag: el.tagName.toLowerCase() };
       }
 
       case "scroll": {
@@ -830,30 +851,28 @@ function contentScriptHandler(op, params) {
         if (target === "up") {
           const px = amount || Math.round(window.innerHeight * 0.8);
           window.scrollBy(0, -px);
-          return { data: { scrolled: "up", pixels: px, scrollY: Math.round(window.scrollY) } };
+          return { scrolled: "up", pixels: px, scrollY: Math.round(window.scrollY) };
         } else if (target === "down") {
           const px = amount || Math.round(window.innerHeight * 0.8);
           window.scrollBy(0, px);
-          return { data: { scrolled: "down", pixels: px, scrollY: Math.round(window.scrollY) } };
+          return { scrolled: "down", pixels: px, scrollY: Math.round(window.scrollY) };
         } else if (target === "top") {
           window.scrollTo(0, 0);
-          return { data: { scrolled: "top", scrollY: 0 } };
+          return { scrolled: "top", scrollY: 0 };
         } else if (target === "bottom") {
           window.scrollTo(0, document.documentElement.scrollHeight);
-          return { data: { scrolled: "bottom", scrollY: Math.round(window.scrollY) } };
+          return { scrolled: "bottom", scrollY: Math.round(window.scrollY) };
         } else {
           const el = qs(target);
           el.scrollIntoView({ block: "center", behavior: "instant" });
-          return { data: { scrolled: target, tag: el.tagName.toLowerCase(), scrollY: Math.round(window.scrollY) } };
+          return { scrolled: target, tag: el.tagName.toLowerCase(), scrollY: Math.round(window.scrollY) };
         }
       }
 
       case "select-option": {
         const el = qs(params.selector);
         if (el.tagName.toLowerCase() !== "select") {
-          throw new Error(
-            `Element is not a <select>: ${params.selector} (found <${el.tagName.toLowerCase()}>)`
-          );
+          throw new Error(`Element is not a <select>: ${params.selector} (found <${el.tagName.toLowerCase()}>)`);
         }
         const value = params.value;
         const byText = params.byText;
@@ -866,17 +885,12 @@ function contentScriptHandler(op, params) {
           }
         }
         if (!found) {
-          const available = Array.from(el.options).map((o) => ({
-            value: o.value,
-            text: o.text.trim(),
-          }));
-          throw new Error(
-            `Option not found: "${value}" in ${params.selector}. Available: ${JSON.stringify(available)}`
-          );
+          const available = Array.from(el.options).map((o) => ({ value: o.value, text: o.text.trim() }));
+          throw new Error(`Option not found: "${value}" in ${params.selector}. Available: ${JSON.stringify(available)}`);
         }
         el.dispatchEvent(new Event("change", { bubbles: true }));
         el.dispatchEvent(new Event("input", { bubbles: true }));
-        return { data: { selected: value, selector: params.selector } };
+        return { selected: value, selector: params.selector };
       }
 
       case "drag": {
@@ -887,7 +901,6 @@ function contentScriptHandler(op, params) {
         const startY = srcRect.top + srcRect.height / 2;
 
         let endX, endY, dropTarget;
-
         if (params.target) {
           const tgt = qs(params.target);
           tgt.scrollIntoView({ block: "center", behavior: "instant" });
@@ -902,84 +915,58 @@ function contentScriptHandler(op, params) {
         }
 
         const dataTransfer = new DataTransfer();
+        source.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, clientX: startX, clientY: startY, dataTransfer }));
+        dropTarget.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, clientX: endX, clientY: endY, dataTransfer }));
+        dropTarget.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, clientX: endX, clientY: endY, dataTransfer }));
+        dropTarget.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, clientX: endX, clientY: endY, dataTransfer }));
+        source.dispatchEvent(new DragEvent("dragend", { bubbles: true, cancelable: true, clientX: endX, clientY: endY, dataTransfer }));
 
-        source.dispatchEvent(
-          new DragEvent("dragstart", {
-            bubbles: true,
-            cancelable: true,
-            clientX: startX,
-            clientY: startY,
-            dataTransfer,
-          })
-        );
-        dropTarget.dispatchEvent(
-          new DragEvent("dragenter", {
-            bubbles: true,
-            cancelable: true,
-            clientX: endX,
-            clientY: endY,
-            dataTransfer,
-          })
-        );
-        dropTarget.dispatchEvent(
-          new DragEvent("dragover", {
-            bubbles: true,
-            cancelable: true,
-            clientX: endX,
-            clientY: endY,
-            dataTransfer,
-          })
-        );
-        dropTarget.dispatchEvent(
-          new DragEvent("drop", {
-            bubbles: true,
-            cancelable: true,
-            clientX: endX,
-            clientY: endY,
-            dataTransfer,
-          })
-        );
-        source.dispatchEvent(
-          new DragEvent("dragend", {
-            bubbles: true,
-            cancelable: true,
-            clientX: endX,
-            clientY: endY,
-            dataTransfer,
-          })
-        );
-
-        return {
-          data: {
-            dragged: params.source,
-            to: params.target || `offset(${params.dx || 0}, ${params.dy || 0})`,
-          },
-        };
-      }
-
-      case "wait": {
-        const selector = params.selector;
-        const timeout = (params.timeout ?? 5) * 1000;
-        return new Promise((resolve) => {
-          const start = Date.now();
-          function check() {
-            const el = document.querySelector(selector);
-            if (el) {
-              resolve({ data: { found: true, selector } });
-            } else if (Date.now() - start > timeout) {
-              resolve({ error: `Timeout waiting for: ${selector}` });
-            } else {
-              setTimeout(check, 100);
-            }
-          }
-          check();
-        });
+        return { dragged: params.source, to: params.target || `offset(${params.dx || 0}, ${params.dy || 0})` };
       }
 
       default:
-        return { error: `Unknown content operation: ${op}` };
+        throw new Error(`Unknown content operation: ${op}`);
     }
-  } catch (e) {
-    return { error: String(e.message || e) };
   }
+
+  // -- Main loop: execute commands sequentially, stop on first error --
+  const results = [];
+  for (const { op, params } of commands) {
+    try {
+      if (op === "wait") {
+        // Handle wait (sleep or selector polling) with async support
+        if (params.seconds !== undefined && params.seconds !== null) {
+          const seconds = parseFloat(params.seconds);
+          await new Promise((r) => setTimeout(r, seconds * 1000));
+          results.push({ success: true, data: { waited: seconds } });
+        } else if (params.selector) {
+          const timeout = (params.timeout ?? 5) * 1000;
+          const start = Date.now();
+          let found = false;
+          while (Date.now() - start < timeout) {
+            if (document.querySelector(params.selector)) {
+              found = true;
+              break;
+            }
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          if (!found) {
+            results.push({ success: false, error: `Timeout waiting for: ${params.selector}` });
+            break;
+          }
+          const elapsed = Math.round((Date.now() - start) / 100) / 10;
+          results.push({ success: true, data: { found: true, selector: params.selector, elapsed } });
+        } else {
+          results.push({ success: true, data: { waited: 0 } });
+        }
+      } else {
+        const data = executeOp(op, params);
+        results.push({ success: true, data });
+      }
+    } catch (e) {
+      results.push({ success: false, error: String(e.message || e) });
+      break;
+    }
+  }
+  return results;
 }

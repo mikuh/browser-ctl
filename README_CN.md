@@ -166,6 +166,13 @@ bctl ping
 | `bctl wait <sel\|秒数> [timeout]` | 等待元素出现或延时 |
 | `bctl dialog [accept\|dismiss] [--text val]` | 处理下一个 alert / confirm / prompt |
 
+### 批量执行
+
+| 命令 | 说明 |
+|------|------|
+| `bctl pipe` | 从 stdin 逐行读取命令（JSONL 输出）。连续 DOM 操作自动合批为单次浏览器调用 |
+| `bctl batch '<cmd1>' '<cmd2>' ...` | 一次调用执行多条命令，智能合批 |
+
 ### 服务器
 
 | 命令 | 说明 |
@@ -234,6 +241,29 @@ bctl click "#delete-button"     # 这会触发一个 confirm() 弹窗
 ```bash
 bctl drag ".task-card" ".done-column"
 bctl drag ".range-slider" --dx 50 --dy 0
+```
+</details>
+
+<details>
+<summary><b>批量 / 管道（高速多步操作）</b></summary>
+
+```bash
+# 管道模式：多条命令一次调用，自动合批
+bctl pipe <<'EOF'
+click "button" -t "Select tag"
+wait 1
+type "input[placeholder='Search']" "v1.0.0"
+wait 1
+click "button" -t "Create new tag"
+EOF
+
+# 批量模式：以参数形式传入
+bctl batch \
+  'click "button" -t "Sign in"' \
+  'wait 1' \
+  'type "#email" "user@example.com"' \
+  'type "#password" "secret"' \
+  'click "button[type=submit]"'
 ```
 </details>
 

@@ -12,6 +12,7 @@ import base64
 import json
 import os
 import platform
+import shlex
 import shutil
 import signal
 import subprocess
@@ -140,6 +141,153 @@ def send_command(action: str, params: dict):
 		sys.exit(1)
 
 
+def send_batch(commands: list[dict]) -> dict:
+	"""Send multiple commands to /batch endpoint, return parsed response."""
+	body = json.dumps({"commands": commands}).encode("utf-8")
+	req = urllib.request.Request(
+		f"{SERVER_URL}/batch",
+		data=body,
+		headers={"Content-Type": "application/json"},
+	)
+	try:
+		resp = urllib.request.urlopen(req, timeout=120)
+		return json.loads(resp.read().decode("utf-8"))
+	except urllib.error.URLError as e:
+		return {"success": False, "error": f"Cannot connect to server: {e}"}
+	except json.JSONDecodeError:
+		return {"success": False, "error": "Invalid response from server"}
+
+
+def _parse_command_string(line: str, parser: argparse.ArgumentParser) -> tuple[str, dict] | None:
+	"""Parse a single command string into (action, params). Returns None on parse failure."""
+	try:
+		tokens = shlex.split(line)
+	except ValueError as e:
+		return None
+	if not tokens:
+		return None
+
+	try:
+		args = parser.parse_args(tokens)
+	except SystemExit:
+		return None
+
+	if not args.command:
+		return None
+
+	cmd = resolve_alias(args.command)
+	return args_to_action_params(cmd, args)
+
+
+# Operations executed inside content scripts — can be batched into a single
+# chrome.scripting.executeScript call.  "eval" is excluded because it uses
+# MAIN-world script-tag injection + CDP debugger fallback.
+CONTENT_SCRIPT_OPS = frozenset({
+	"click", "hover", "type", "press", "text", "html", "attr",
+	"select", "count", "scroll", "select-option", "drag", "wait",
+})
+
+
+def handle_pipe(args):
+	"""Read commands from stdin, execute them with smart batching, print JSONL."""
+	ensure_server()
+	parser = build_parser()
+
+	# Collect all commands first
+	pending: list[tuple[str, dict]] = []
+	for line in sys.stdin:
+		line = line.strip()
+		if not line or line.startswith("#"):
+			continue
+		parsed = _parse_command_string(line, parser)
+		if parsed is None:
+			print(json.dumps({"success": False, "error": f"Failed to parse command: {line}"}),
+				  flush=True)
+			sys.exit(1)
+		pending.append(parsed)
+
+	if not pending:
+		return
+
+	cont = getattr(args, "continue_on_error", False)
+	_execute_with_batching(pending, continue_on_error=cont)
+
+
+def handle_batch(args):
+	"""Execute multiple commands given as CLI arguments with smart batching."""
+	ensure_server()
+	parser = build_parser()
+
+	pending: list[tuple[str, dict]] = []
+	for cmd_str in args.commands:
+		parsed = _parse_command_string(cmd_str, parser)
+		if parsed is None:
+			print(json.dumps({"success": False, "error": f"Failed to parse command: {cmd_str}"}),
+				  flush=True)
+			sys.exit(1)
+		pending.append(parsed)
+
+	if not pending:
+		return
+
+	cont = getattr(args, "continue_on_error", False)
+	_execute_with_batching(pending, continue_on_error=cont)
+
+
+def _execute_with_batching(commands: list[tuple[str, dict]], continue_on_error: bool):
+	"""Execute commands with smart batching — groups consecutive content-script
+	ops into single /batch requests for maximum performance."""
+	i = 0
+	had_error = False
+	while i < len(commands):
+		action, params = commands[i]
+
+		if action in CONTENT_SCRIPT_OPS:
+			# Collect consecutive content-script ops into a batch
+			batch: list[dict] = []
+			while i < len(commands) and commands[i][0] in CONTENT_SCRIPT_OPS:
+				a, p = commands[i]
+				batch.append({"action": a, "params": p})
+				i += 1
+
+			if len(batch) == 1:
+				# Single command — use normal endpoint (no overhead)
+				result = send_raw(batch[0]["action"], batch[0]["params"])
+				print(json.dumps(result, ensure_ascii=False), flush=True)
+				if not result.get("success"):
+					had_error = True
+					if not continue_on_error:
+						sys.exit(1)
+			else:
+				# Multiple consecutive content-script ops — use /batch
+				result = send_batch(batch)
+				if result.get("success") and "results" in result.get("data", {}):
+					for r in result["data"]["results"]:
+						print(json.dumps(r, ensure_ascii=False), flush=True)
+						if not r.get("success"):
+							had_error = True
+							if not continue_on_error:
+								sys.exit(1)
+				else:
+					# Batch-level error
+					print(json.dumps(result, ensure_ascii=False), flush=True)
+					had_error = True
+					if not continue_on_error:
+						sys.exit(1)
+		else:
+			# Non-batchable command — send individually
+			result = send_raw(action, params)
+			print(json.dumps(result, ensure_ascii=False), flush=True)
+			if not result.get("success"):
+				had_error = True
+				if not continue_on_error:
+					sys.exit(1)
+			i += 1
+
+	if had_error:
+		sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # CLI definition
 # ---------------------------------------------------------------------------
@@ -261,6 +409,14 @@ def build_parser() -> argparse.ArgumentParser:
 	sub.add_parser("serve", help="Start bridge server (foreground)")
 	sub.add_parser("ping", help="Check server and extension status")
 	sub.add_parser("stop", help="Stop bridge server")
+
+	# -- Batch / Pipe --
+	p = sub.add_parser("pipe", help="Read commands from stdin (one per line, JSONL output)")
+	p.add_argument("--continue-on-error", action="store_true", help="Don't stop on first error")
+
+	p = sub.add_parser("batch", help="Execute multiple commands in one call")
+	p.add_argument("commands", nargs="+", help="Commands as quoted strings, e.g. 'click \"button\"'")
+	p.add_argument("--continue-on-error", action="store_true", help="Don't stop on first error")
 
 	# -- Setup --
 	p = sub.add_parser("setup", help="Install Chrome extension and AI coding skill")
@@ -458,61 +614,32 @@ def handle_setup(args):
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Command parsing helpers (reused by main, pipe, batch)
 # ---------------------------------------------------------------------------
 
+_ALIASES = {
+	"nav": "navigate", "go": "navigate",
+	"fwd": "forward",
+	"ss": "screenshot",
+	"sel": "select",
+	"dl": "download",
+	"sopt": "select-option",
+}
 
-def main():
-	parser = build_parser()
-	args = parser.parse_args()
 
-	if not args.command:
-		parser.print_help()
-		sys.exit(0)
+def resolve_alias(cmd: str) -> str:
+	"""Resolve command aliases to canonical names."""
+	return _ALIASES.get(cmd, cmd)
 
-	cmd = args.command
 
-	# Aliases
-	if cmd in ("nav", "go"):
-		cmd = "navigate"
-	if cmd == "fwd":
-		cmd = "forward"
-	if cmd in ("ss",):
-		cmd = "screenshot"
-	if cmd in ("sel",):
-		cmd = "select"
-	if cmd in ("dl",):
-		cmd = "download"
-	if cmd in ("sopt",):
-		cmd = "select-option"
-
-	# Local-only commands (no server needed)
-	if cmd == "setup":
-		handle_setup(args)
-		return
-	if cmd == "serve":
-		handle_serve(args)
-		return
-	if cmd == "stop":
-		stop_server()
-		return
-
-	# Screenshot (special handling)
-	if cmd == "screenshot":
-		handle_screenshot(args)
-		return
-
-	# Download (special handling for absolute output paths)
-	if cmd == "download":
-		handle_download(args)
-		return
-
-	# Map CLI args to command params
-	params = {}
+def args_to_action_params(cmd: str, args) -> tuple[str, dict]:
+	"""Convert parsed argparse namespace to (action, params) tuple."""
+	params: dict = {}
 	if cmd == "navigate":
 		url = args.url
-		# Auto-prepend https:// for bare domains
-		if not url.split(":", 1)[0].lower() in ("http", "https", "file", "about", "data", "chrome", "chrome-extension"):
+		if url.split(":", 1)[0].lower() not in (
+			"http", "https", "file", "about", "data", "chrome", "chrome-extension",
+		):
 			url = "https://" + url
 		params = {"url": url}
 	elif cmd == "click":
@@ -553,14 +680,63 @@ def main():
 	elif cmd == "drag":
 		params = {"source": args.source, "target": args.target, "dx": args.dx, "dy": args.dy}
 	elif cmd == "wait":
-		# Determine if target is a number (sleep) or selector
 		try:
 			seconds = float(args.target)
 			params = {"seconds": seconds}
 		except ValueError:
 			params = {"selector": args.target, "timeout": args.timeout}
+	return cmd, params
 
-	send_command(cmd, params)
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main():
+	parser = build_parser()
+	args = parser.parse_args()
+
+	if not args.command:
+		parser.print_help()
+		sys.exit(0)
+
+	cmd = resolve_alias(args.command)
+
+	# Local-only commands (no server needed)
+	if cmd == "setup":
+		handle_setup(args)
+		return
+	if cmd == "serve":
+		handle_serve(args)
+		return
+	if cmd == "stop":
+		stop_server()
+		return
+
+	# Screenshot (special handling)
+	if cmd == "screenshot":
+		handle_screenshot(args)
+		return
+
+	# Download (special handling for absolute output paths)
+	if cmd == "download":
+		handle_download(args)
+		return
+
+	# Pipe mode
+	if cmd == "pipe":
+		handle_pipe(args)
+		return
+
+	# Batch mode
+	if cmd == "batch":
+		handle_batch(args)
+		return
+
+	# Standard command: parse args, send to server
+	action, params = args_to_action_params(cmd, args)
+	send_command(action, params)
 
 
 if __name__ == "__main__":

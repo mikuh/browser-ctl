@@ -107,28 +107,74 @@ async def command_handler(request: web.Request) -> web.Response:
 	if _ext_ws is None or _ext_ws.closed:
 		return _json_error("Chrome extension not connected. Open Chrome and check the extension is loaded.")
 
-	req_id = f"r-{uuid.uuid4().hex[:12]}"
-	future: asyncio.Future = asyncio.get_event_loop().create_future()
-	_pending[req_id] = future
+	result = await _relay_to_extension(action, params)
+	return web.json_response(result)
 
+
+async def batch_handler(request: web.Request) -> web.Response:
+	"""Execute multiple commands in a single request.
+
+	Content-script operations (click, type, scroll, …) that appear
+	consecutively are grouped and sent to the extension as a single "batch"
+	action so that only one ``chrome.scripting.executeScript`` call is made.
+	Non-content-script operations (navigate, screenshot, …) are sent
+	individually between groups.
+	"""
 	try:
-		await _ext_ws.send_json({
-			"id": req_id,
-			"action": action,
-			"params": params,
-		})
+		body = await request.json()
+	except json.JSONDecodeError:
+		return _json_error("Invalid JSON in request body", status=400)
 
-		# Wait for extension response
-		result = await asyncio.wait_for(future, timeout=COMMAND_TIMEOUT)
-		# Strip internal request ID before returning to CLI
-		result.pop("id", None)
-		return web.json_response(result)
-	except asyncio.TimeoutError:
-		return _json_error(f"Extension did not respond within {COMMAND_TIMEOUT}s")
-	except ConnectionResetError:
-		return _json_error("Extension connection lost during command")
-	finally:
-		_pending.pop(req_id, None)
+	commands = body.get("commands", [])
+	if not commands:
+		return _json_ok({"results": []})
+
+	if _ext_ws is None or _ext_ws.closed:
+		return _json_error("Chrome extension not connected. Open Chrome and check the extension is loaded.")
+
+	results: list[dict] = []
+
+	i = 0
+	while i < len(commands):
+		cmd = commands[i]
+		action = cmd.get("action", "")
+		params = cmd.get("params", {})
+
+		if action in _CONTENT_SCRIPT_OPS:
+			# Collect consecutive content-script ops
+			batch_cmds: list[dict] = []
+			while i < len(commands) and commands[i].get("action", "") in _CONTENT_SCRIPT_OPS:
+				batch_cmds.append({
+					"action": commands[i]["action"],
+					"params": commands[i].get("params", {}),
+				})
+				i += 1
+
+			# Send as a single "batch" action to extension
+			result = await _relay_to_extension("batch", {"commands": batch_cmds})
+			if result.get("success") and isinstance(result.get("data", {}).get("results"), list):
+				results.extend(result["data"]["results"])
+				# Check if batch stopped early due to error
+				if any(not r.get("success") for r in result["data"]["results"]):
+					break
+			else:
+				results.append(result)
+				break
+		else:
+			# Non-batchable: send individually
+			if action == "ping":
+				result = {"success": True, "data": {
+					"server": True,
+					"extension": _ext_ws is not None and not _ext_ws.closed,
+				}}
+			else:
+				result = await _relay_to_extension(action, params)
+			results.append(result)
+			if not result.get("success"):
+				break
+			i += 1
+
+	return _json_ok({"results": results})
 
 
 async def health_handler(request: web.Request) -> web.Response:
@@ -142,6 +188,42 @@ async def health_handler(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# Operations that run inside content scripts and can be batched.
+# Operations executed inside content scripts — can be batched into a single
+# chrome.scripting.executeScript call.  "eval" is excluded because it uses
+# MAIN-world script-tag injection + CDP debugger fallback.
+_CONTENT_SCRIPT_OPS = frozenset({
+	"click", "hover", "type", "press", "text", "html", "attr",
+	"select", "count", "scroll", "select-option", "drag", "wait",
+})
+
+
+async def _relay_to_extension(action: str, params: dict) -> dict:
+	"""Send a single command to the extension via WebSocket and await result."""
+	if _ext_ws is None or _ext_ws.closed:
+		return {"success": False, "error": "Chrome extension not connected."}
+
+	req_id = f"r-{uuid.uuid4().hex[:12]}"
+	future: asyncio.Future = asyncio.get_event_loop().create_future()
+	_pending[req_id] = future
+
+	try:
+		await _ext_ws.send_json({
+			"id": req_id,
+			"action": action,
+			"params": params,
+		})
+		result = await asyncio.wait_for(future, timeout=COMMAND_TIMEOUT)
+		result.pop("id", None)
+		return result
+	except asyncio.TimeoutError:
+		return {"success": False, "error": f"Extension did not respond within {COMMAND_TIMEOUT}s"}
+	except ConnectionResetError:
+		return {"success": False, "error": "Extension connection lost during command"}
+	finally:
+		_pending.pop(req_id, None)
+
 
 def _json_ok(data: dict, status: int = 200) -> web.Response:
 	return web.json_response({"success": True, "data": data}, status=status)
@@ -167,6 +249,7 @@ def create_app() -> web.Application:
 	app = web.Application()
 	app.router.add_get("/ws", ws_handler)
 	app.router.add_post("/command", command_handler)
+	app.router.add_post("/batch", batch_handler)
 	app.router.add_get("/health", health_handler)
 	return app
 

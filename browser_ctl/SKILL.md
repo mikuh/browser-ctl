@@ -79,6 +79,12 @@ bctl wait <sel|seconds>   Wait for element or sleep [timeout]
 bctl dialog [accept|dismiss] [--text <val>]  Handle next alert/confirm/prompt
 ```
 
+### Batch / Pipe
+```
+bctl pipe                 Read commands from stdin (one per line, JSONL output)
+bctl batch '<c1>' '<c2>'  Execute multiple commands in one call
+```
+
 ### Server
 ```
 bctl ping                 Check server and extension status
@@ -124,6 +130,22 @@ bctl attr ".result-item a" href -i 0              # Get specific attribute
   visible text contains "Submit" (case-insensitive substring match).
 - This avoids fragile selectors like `button.css-1a2b3c4` and eliminates the need
   for `bctl eval 'document.querySelector(...).click()'` workarounds.
+
+### Batch / Pipe (prefer for multi-step workflows)
+- **Always use `bctl pipe` when performing 2+ consecutive commands** on the same
+  page. Consecutive DOM operations (click, type, scroll, wait…) are automatically
+  merged into a single browser call, reducing overhead by ~90%.
+- Pipe reads from stdin, one command per line (`#` comments and blank lines OK).
+  Each line is a normal bctl command without the `bctl` prefix.
+- Output is JSONL — one JSON object per command.
+- Example (fill a form in one shot):
+  ```
+  bctl pipe <<'EOF'
+  type "#email" "user@example.com"
+  type "#password" "secret"
+  click "button[type=submit]"
+  EOF
+  ```
 
 ### Shell Quoting
 - Wrap CSS selectors in double quotes: `bctl click "button.submit"`

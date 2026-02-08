@@ -166,6 +166,13 @@ bctl ping
 | `bctl wait <sel\|seconds> [timeout]` | Wait for element or sleep |
 | `bctl dialog [accept\|dismiss] [--text val]` | Handle next alert / confirm / prompt |
 
+### Batch / Pipe
+
+| Command | Description |
+|---------|-------------|
+| `bctl pipe` | Read commands from stdin, one per line (JSONL output). Consecutive DOM ops are auto-batched into a single browser call |
+| `bctl batch '<cmd1>' '<cmd2>' ...` | Execute multiple commands in one call with smart batching |
+
 ### Server
 
 | Command | Description |
@@ -234,6 +241,29 @@ bctl click "#delete-button"     # This triggers a confirm() dialog
 ```bash
 bctl drag ".task-card" ".done-column"
 bctl drag ".range-slider" --dx 50 --dy 0
+```
+</details>
+
+<details>
+<summary><b>Batch / Pipe (fast multi-step)</b></summary>
+
+```bash
+# Pipe mode: multiple commands in one call, auto-batched
+bctl pipe <<'EOF'
+click "button" -t "Select tag"
+wait 1
+type "input[placeholder='Search']" "v1.0.0"
+wait 1
+click "button" -t "Create new tag"
+EOF
+
+# Batch mode: same thing as arguments
+bctl batch \
+  'click "button" -t "Sign in"' \
+  'wait 1' \
+  'type "#email" "user@example.com"' \
+  'type "#password" "secret"' \
+  'click "button[type=submit]"'
 ```
 </details>
 
