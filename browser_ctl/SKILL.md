@@ -34,6 +34,9 @@ bctl click <sel> [-i N]   Click element (CSS selector, optional index)
 bctl hover <sel> [-i N]   Hover over element
 bctl type <sel> <text>    Type text into element
 bctl press <key>          Press key (Enter, Escape, Tab, etc.)
+bctl scroll <dir|sel> [n] Scroll page: up/down/top/bottom or element into view
+bctl select-option <sel> <val> [--text]  Select <select> dropdown option (alias: sopt)
+bctl drag <src> [target]  Drag element to target [--dx N --dy N for offset]
 ```
 
 ### Query
@@ -63,11 +66,17 @@ bctl close-tab [id]       Close tab (default: active)
 ```
 bctl screenshot [path]    Capture screenshot (alias: ss)
 bctl download <target>    Download file/image (alias: dl) [-o file] [-i N]
+bctl upload <sel> <files> Upload file(s) to <input type="file">
 ```
 
 ### Wait
 ```
 bctl wait <sel|seconds>   Wait for element or sleep [timeout]
+```
+
+### Dialog
+```
+bctl dialog [accept|dismiss] [--text <val>]  Handle next alert/confirm/prompt
 ```
 
 ### Server
@@ -125,6 +134,28 @@ bctl text h1
 bctl click "button.login"
 bctl type "input[name=q]" "search query"
 bctl press Enter
+
+# Scroll a long page
+bctl scroll down              # Scroll down ~80% viewport
+bctl scroll down 500          # Scroll down 500px
+bctl scroll up                # Scroll up
+bctl scroll top               # Scroll to top
+bctl scroll bottom            # Scroll to bottom
+bctl scroll "#section-3"      # Scroll element into view
+
+# Form interaction
+bctl select-option "select#country" "US"           # Select by value
+bctl select-option "select#lang" "English" --text  # Select by visible text
+bctl upload "input[type=file]" ./photo.jpg          # Upload file
+
+# Handle dialogs (call BEFORE triggering action)
+bctl dialog accept               # Auto-accept next alert/confirm
+bctl dialog dismiss              # Dismiss next confirm
+bctl dialog accept --text "yes"  # Answer next prompt with "yes"
+
+# Drag and drop
+bctl drag ".card-1" ".column-done"          # Drag to target element
+bctl drag ".slider-handle" --dx 100 --dy 0  # Drag by pixel offset
 
 # Wait then screenshot
 bctl wait ".loaded" 10

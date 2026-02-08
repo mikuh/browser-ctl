@@ -164,6 +164,26 @@ async function handleAction(action, params) {
     case "wait":
       return await doWait(params);
 
+    // -- Scroll --
+    case "scroll":
+      return await runInPage("scroll", params);
+
+    // -- Form --
+    case "select-option":
+      return await runInPage("select-option", params);
+
+    // -- Upload --
+    case "upload":
+      return await doUpload(params);
+
+    // -- Dialog --
+    case "dialog":
+      return await doDialog(params);
+
+    // -- Drag --
+    case "drag":
+      return await runInPage("drag", params);
+
     default:
       throw new Error(`Unknown action: ${action}`);
   }
@@ -477,6 +497,118 @@ async function doWait(params) {
 }
 
 // ---------------------------------------------------------------------------
+// Upload (via Chrome DevTools Protocol)
+// ---------------------------------------------------------------------------
+
+async function doUpload(params) {
+  const { selector, files } = params;
+  if (!selector) throw new Error("Missing 'selector' parameter");
+  if (!files || !files.length) throw new Error("Missing 'files' parameter");
+
+  const tab = await activeTab();
+
+  try {
+    await chrome.debugger.attach({ tabId: tab.id }, "1.3");
+  } catch (e) {
+    if (e.message?.includes("Another debugger")) {
+      throw new Error(
+        "upload: cannot attach debugger (DevTools may be open). Close DevTools and retry."
+      );
+    }
+    throw new Error("upload: cannot attach debugger — " + (e.message || e));
+  }
+
+  try {
+    const doc = await chrome.debugger.sendCommand(
+      { tabId: tab.id },
+      "DOM.getDocument",
+      {}
+    );
+
+    const nodeResult = await chrome.debugger.sendCommand(
+      { tabId: tab.id },
+      "DOM.querySelector",
+      { nodeId: doc.root.nodeId, selector }
+    );
+
+    if (!nodeResult.nodeId) {
+      throw new Error(`Element not found: ${selector}`);
+    }
+
+    await chrome.debugger.sendCommand(
+      { tabId: tab.id },
+      "DOM.setFileInputFiles",
+      { files, nodeId: nodeResult.nodeId }
+    );
+
+    return { uploaded: files.length, files, selector };
+  } finally {
+    try {
+      await chrome.debugger.detach({ tabId: tab.id });
+    } catch (_) {
+      // ignore detach errors
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dialog handling (override window.alert/confirm/prompt)
+// ---------------------------------------------------------------------------
+
+async function doDialog(params) {
+  const accept = params.accept !== false;
+  const text = params.text || "";
+
+  const tab = await activeTab();
+
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: (shouldAccept, responseText) => {
+      const origAlert = window.alert;
+      const origConfirm = window.confirm;
+      const origPrompt = window.prompt;
+
+      // Restore originals after first dialog fires
+      function restore() {
+        window.alert = origAlert;
+        window.confirm = origConfirm;
+        window.prompt = origPrompt;
+      }
+
+      window.alert = function (message) {
+        window.__bctl_last_dialog = { type: "alert", message: String(message) };
+        restore();
+      };
+
+      window.confirm = function (message) {
+        window.__bctl_last_dialog = {
+          type: "confirm",
+          message: String(message),
+          returned: shouldAccept,
+        };
+        restore();
+        return shouldAccept;
+      };
+
+      window.prompt = function (message, defaultValue) {
+        const value = shouldAccept ? responseText || defaultValue || "" : null;
+        window.__bctl_last_dialog = {
+          type: "prompt",
+          message: String(message),
+          returned: value,
+        };
+        restore();
+        return value;
+      };
+    },
+    args: [accept, text],
+    world: "MAIN",
+  });
+
+  return { handler: accept ? "accept" : "dismiss", text: text || null };
+}
+
+// ---------------------------------------------------------------------------
 // Content-script injection
 // ---------------------------------------------------------------------------
 
@@ -626,6 +758,139 @@ function contentScriptHandler(op, params) {
         const el = qs(params.selector, params.index);
         const url = el.src || el.href || el.getAttribute("data-src") || el.currentSrc || null;
         return { data: { url, tag: el.tagName.toLowerCase() } };
+      }
+
+      case "scroll": {
+        const target = params.target;
+        const amount = params.amount;
+        if (target === "up") {
+          const px = amount || Math.round(window.innerHeight * 0.8);
+          window.scrollBy(0, -px);
+          return { data: { scrolled: "up", pixels: px, scrollY: Math.round(window.scrollY) } };
+        } else if (target === "down") {
+          const px = amount || Math.round(window.innerHeight * 0.8);
+          window.scrollBy(0, px);
+          return { data: { scrolled: "down", pixels: px, scrollY: Math.round(window.scrollY) } };
+        } else if (target === "top") {
+          window.scrollTo(0, 0);
+          return { data: { scrolled: "top", scrollY: 0 } };
+        } else if (target === "bottom") {
+          window.scrollTo(0, document.documentElement.scrollHeight);
+          return { data: { scrolled: "bottom", scrollY: Math.round(window.scrollY) } };
+        } else {
+          const el = qs(target);
+          el.scrollIntoView({ block: "center", behavior: "instant" });
+          return { data: { scrolled: target, tag: el.tagName.toLowerCase(), scrollY: Math.round(window.scrollY) } };
+        }
+      }
+
+      case "select-option": {
+        const el = qs(params.selector);
+        if (el.tagName.toLowerCase() !== "select") {
+          throw new Error(
+            `Element is not a <select>: ${params.selector} (found <${el.tagName.toLowerCase()}>)`
+          );
+        }
+        const value = params.value;
+        const byText = params.byText;
+        let found = false;
+        for (const opt of el.options) {
+          if (byText ? opt.text.trim() === value : opt.value === value) {
+            el.value = opt.value;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          const available = Array.from(el.options).map((o) => ({
+            value: o.value,
+            text: o.text.trim(),
+          }));
+          throw new Error(
+            `Option not found: "${value}" in ${params.selector}. Available: ${JSON.stringify(available)}`
+          );
+        }
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        return { data: { selected: value, selector: params.selector } };
+      }
+
+      case "drag": {
+        const source = qs(params.source);
+        source.scrollIntoView({ block: "center", behavior: "instant" });
+        const srcRect = source.getBoundingClientRect();
+        const startX = srcRect.left + srcRect.width / 2;
+        const startY = srcRect.top + srcRect.height / 2;
+
+        let endX, endY, dropTarget;
+
+        if (params.target) {
+          const tgt = qs(params.target);
+          tgt.scrollIntoView({ block: "center", behavior: "instant" });
+          const tgtRect = tgt.getBoundingClientRect();
+          endX = tgtRect.left + tgtRect.width / 2;
+          endY = tgtRect.top + tgtRect.height / 2;
+          dropTarget = tgt;
+        } else {
+          endX = startX + (params.dx || 0);
+          endY = startY + (params.dy || 0);
+          dropTarget = document.elementFromPoint(endX, endY) || document.body;
+        }
+
+        const dataTransfer = new DataTransfer();
+
+        source.dispatchEvent(
+          new DragEvent("dragstart", {
+            bubbles: true,
+            cancelable: true,
+            clientX: startX,
+            clientY: startY,
+            dataTransfer,
+          })
+        );
+        dropTarget.dispatchEvent(
+          new DragEvent("dragenter", {
+            bubbles: true,
+            cancelable: true,
+            clientX: endX,
+            clientY: endY,
+            dataTransfer,
+          })
+        );
+        dropTarget.dispatchEvent(
+          new DragEvent("dragover", {
+            bubbles: true,
+            cancelable: true,
+            clientX: endX,
+            clientY: endY,
+            dataTransfer,
+          })
+        );
+        dropTarget.dispatchEvent(
+          new DragEvent("drop", {
+            bubbles: true,
+            cancelable: true,
+            clientX: endX,
+            clientY: endY,
+            dataTransfer,
+          })
+        );
+        source.dispatchEvent(
+          new DragEvent("dragend", {
+            bubbles: true,
+            cancelable: true,
+            clientX: endX,
+            clientY: endY,
+            dataTransfer,
+          })
+        );
+
+        return {
+          data: {
+            dragged: params.source,
+            to: params.target || `offset(${params.dx || 0}, ${params.dy || 0})`,
+          },
+        };
       }
 
       case "wait": {

@@ -202,6 +202,34 @@ def build_parser() -> argparse.ArgumentParser:
 	p.add_argument("-o", "--output", default=None, help="Output filename (default: auto)")
 	p.add_argument("-i", "--index", type=int, default=None, help="Download Nth matching element (0-based, negative from end)")
 
+	# -- Scroll --
+	p = sub.add_parser("scroll", help="Scroll the page")
+	p.add_argument("target", help="Direction (up/down/top/bottom) or CSS selector to scroll into view")
+	p.add_argument("amount", nargs="?", type=int, default=None, help="Pixels to scroll (for up/down)")
+
+	# -- Form interaction --
+	p = sub.add_parser("select-option", aliases=["sopt"], help="Select option in <select> dropdown")
+	p.add_argument("selector", help="CSS selector for <select> element")
+	p.add_argument("value", help="Option value or text to select")
+	p.add_argument("--text", action="store_true", help="Match by visible text instead of value")
+
+	# -- File upload --
+	p = sub.add_parser("upload", help="Upload file(s) to file input")
+	p.add_argument("selector", help="CSS selector for file input")
+	p.add_argument("files", nargs="+", help="File path(s) to upload")
+
+	# -- Dialog --
+	p = sub.add_parser("dialog", help="Set handler for next browser dialog (alert/confirm/prompt)")
+	p.add_argument("action", nargs="?", default="accept", choices=["accept", "dismiss"], help="Accept or dismiss (default: accept)")
+	p.add_argument("--text", default=None, help="Response text for prompt dialog")
+
+	# -- Drag --
+	p = sub.add_parser("drag", help="Drag element to another element or offset")
+	p.add_argument("source", help="CSS selector of element to drag")
+	p.add_argument("target", nargs="?", default=None, help="CSS selector of drop target")
+	p.add_argument("--dx", type=int, default=None, help="Horizontal pixel offset (when no target)")
+	p.add_argument("--dy", type=int, default=None, help="Vertical pixel offset (when no target)")
+
 	# -- Wait --
 	p = sub.add_parser("wait", help="Wait for element or sleep")
 	p.add_argument("target", help="CSS selector or seconds to wait")
@@ -387,6 +415,8 @@ def main():
 		cmd = "select"
 	if cmd in ("dl",):
 		cmd = "download"
+	if cmd in ("sopt",):
+		cmd = "select-option"
 
 	# Local-only commands (no server needed)
 	if cmd == "setup":
@@ -440,6 +470,17 @@ def main():
 			params = {"url": target, "filename": args.output}
 		else:
 			params = {"selector": target, "filename": args.output, "index": args.index}
+	elif cmd == "scroll":
+		params = {"target": args.target, "amount": args.amount}
+	elif cmd == "select-option":
+		params = {"selector": args.selector, "value": args.value, "byText": args.text}
+	elif cmd == "upload":
+		files = [os.path.abspath(f) for f in args.files]
+		params = {"selector": args.selector, "files": files}
+	elif cmd == "dialog":
+		params = {"accept": args.action == "accept", "text": args.text}
+	elif cmd == "drag":
+		params = {"source": args.source, "target": args.target, "dx": args.dx, "dy": args.dy}
 	elif cmd == "wait":
 		# Determine if target is a number (sleep) or selector
 		try:
