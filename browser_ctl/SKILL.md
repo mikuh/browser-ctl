@@ -7,7 +7,8 @@ All commands communicate through a Chrome extension + WebSocket bridge and retur
 
 Use browser-ctl when you need to:
 - Navigate web pages, click elements, type text, press keys
-- Query the DOM: get text, HTML, attributes, or count elements
+- Snapshot interactive elements and operate them by ref (e0, e1, …)
+- Query the DOM: get text, HTML, attributes, values, or count elements
 - Take screenshots or download files (preserves browser auth/cookies)
 - Execute arbitrary JavaScript in the page context
 - Manage browser tabs (list, switch, open, close)
@@ -29,24 +30,33 @@ bctl reload               Reload page
 ```
 
 ### Interaction
+All `<sel>` arguments accept CSS selectors or element refs (e.g. `e5` from `snapshot`).
 ```
-bctl click <sel> [-i N] [-t text]  Click element; -t filters by visible text (substring)
-bctl hover <sel> [-i N] [-t text]  Hover over element; -t filters by visible text
-bctl type <sel> <text>    Type text into element (React-compatible)
-bctl press <key>          Press key — Enter submits forms, Escape closes dialogs
-bctl scroll <dir|sel> [n] Scroll page: up/down/top/bottom or element into view
+bctl click <sel> [-i N] [-t text]    Click element; -t filters by visible text (substring)
+bctl dblclick <sel> [-i N] [-t text] Double-click element
+bctl hover <sel> [-i N] [-t text]    Hover over element
+bctl focus <sel> [-i N] [-t text]    Focus element
+bctl type <sel> <text>               Type text (replaces existing; React-compatible)
+bctl input-text <sel> <text> [--clear] [--delay ms]  Char-by-char typing (rich text editors)
+bctl press <key>                     Press key — Enter submits forms, Escape closes dialogs
+bctl check <sel> [-i N] [-t text]    Check checkbox/radio
+bctl uncheck <sel> [-i N] [-t text]  Uncheck checkbox
+bctl scroll <dir|sel> [n]            Scroll page: up/down/top/bottom or element into view
 bctl select-option <sel> <val> [--text]  Select <select> dropdown option (alias: sopt)
-bctl drag <src> [target]  Drag element to target [--dx N --dy N for offset]
+bctl drag <src> [target]             Drag element to target [--dx N --dy N for offset]
 ```
 
 ### Query
 ```
+bctl snapshot [--all]     List interactive elements with refs e0, e1, … (alias: snap)
 bctl text [sel]           Get text content (default: body)
 bctl html [sel]           Get innerHTML
 bctl attr <sel> [name]    Get attribute(s) [-i N for Nth element]
 bctl select <sel> [-l N]  List matching elements (alias: sel, limit default: 20)
 bctl count <sel>          Count matching elements
 bctl status               Current page URL and title
+bctl is-visible <sel>     Check if element is visible (returns rect)
+bctl get-value <sel>      Get value of form element (input/select/textarea)
 ```
 
 ### JavaScript
@@ -99,6 +109,18 @@ All commands return JSON:
 - Error: `{"success": false, "error": "..."}`
 
 ## Tips & Best Practices
+
+### Snapshot-first Workflow (recommended for AI agents)
+- **Use `bctl snapshot` to get a numbered list of interactive elements**, then operate
+  by ref (e.g. `bctl click e5`). This eliminates guessing CSS selectors.
+- Refs are assigned as `data-bctl-ref` attributes and persist until the next snapshot.
+- Example:
+  ```bash
+  bctl snapshot                    # List all interactive elements
+  bctl click e3                    # Click the 3rd interactive element
+  bctl type e7 "hello world"      # Type into the 7th element
+  bctl input-text e7 "hello" --clear --delay 20  # Char-by-char for rich editors
+  ```
 
 ### Data Extraction
 - **Prefer `bctl select` over `bctl eval`** for extracting structured DOM data — it's
@@ -160,11 +182,26 @@ bctl go https://example.com
 bctl status
 bctl text h1
 
+# Snapshot workflow (recommended)
+bctl snapshot                       # See all interactive elements as e0, e1, …
+bctl click e3                       # Click element by ref
+bctl type e5 "hello"                # Type into element by ref
+bctl get-value e5                   # Read form value
+bctl is-visible e3                  # Check visibility
+
 # Click by selector or by text
 bctl click "button.login"
 bctl click "button" -t "Sign in"           # click button containing "Sign in"
+bctl dblclick "td.cell"                    # double-click
 bctl type "input[name=q]" "search query"
 bctl press Enter
+
+# Character-by-character input (rich text editors, contenteditable)
+bctl input-text "div[contenteditable]" "hello" --clear --delay 20
+
+# Checkbox / radio
+bctl check "input#agree"
+bctl uncheck "input#newsletter"
 
 # Scroll a long page
 bctl scroll down              # Scroll down ~80% viewport

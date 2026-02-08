@@ -211,6 +211,28 @@ async function handleAction(action, params) {
     case "drag":
       return await runInPage("drag", params);
 
+    // -- Snapshot --
+    case "snapshot":
+      return await runInPage("snapshot", params);
+
+    // -- Extra interaction --
+    case "dblclick":
+      return await runInPage("dblclick", params);
+    case "focus":
+      return await runInPage("focus", params);
+    case "check":
+      return await runInPage("check", params);
+    case "uncheck":
+      return await runInPage("uncheck", params);
+    case "input-text":
+      return await runInPage("input-text", params);
+
+    // -- Extra query --
+    case "is-visible":
+      return await runInPage("is-visible", params);
+    case "get-value":
+      return await runInPage("get-value", params);
+
     // -- Batch (multiple content-script ops in a single executeScript) --
     case "batch":
       return await doBatch(params);
@@ -698,9 +720,17 @@ async function doBatch(params) {
  * It CANNOT reference any variables from the outer scope.
  */
 async function contentScriptHandler(commands) {
-  // -- Helper: query element by CSS selector with optional text filter --
+  // -- Helper: query element by ref (e0, e1, …) or CSS selector with optional text filter --
   function qs(selector, index, textFilter) {
     if (!selector) return document.body;
+
+    // Element ref support: "e0", "e1", "e2", … from snapshot
+    if (/^e\d+$/.test(selector)) {
+      const el = document.querySelector(`[data-bctl-ref="${selector}"]`);
+      if (!el) throw new Error(`Ref not found: ${selector} (run 'snapshot' first to assign refs)`);
+      return el;
+    }
+
     let candidates = Array.from(document.querySelectorAll(selector));
     if (candidates.length === 0) throw new Error(`Element not found: ${selector}`);
 
@@ -924,6 +954,161 @@ async function contentScriptHandler(commands) {
         return { dragged: params.source, to: params.target || `offset(${params.dx || 0}, ${params.dy || 0})` };
       }
 
+      // -- Double-click --
+      case "dblclick": {
+        const el = qs(params.selector, params.index, params.text);
+        el.scrollIntoView({ block: "center", behavior: "instant" });
+        el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+        const total = params.selector ? document.querySelectorAll(params.selector).length : 1;
+        return { dblclicked: params.selector || "body", index: params.index ?? 0, total, text: params.text || null };
+      }
+
+      // -- Focus --
+      case "focus": {
+        const el = qs(params.selector, params.index, params.text);
+        el.scrollIntoView({ block: "center", behavior: "instant" });
+        el.focus();
+        return { focused: params.selector, tag: el.tagName.toLowerCase() };
+      }
+
+      // -- Checkbox: check / uncheck --
+      case "check":
+      case "uncheck": {
+        const el = qs(params.selector, params.index, params.text);
+        const shouldCheck = (op === "check");
+        if (el.type === "checkbox" || el.type === "radio") {
+          if (el.checked !== shouldCheck) {
+            el.click();
+          }
+        } else {
+          // ARIA checkbox / switch
+          const current = el.getAttribute("aria-checked") === "true";
+          if (current !== shouldCheck) {
+            el.click();
+          }
+        }
+        const checked = el.type === "checkbox" || el.type === "radio"
+          ? el.checked
+          : el.getAttribute("aria-checked") === "true";
+        return { selector: params.selector, checked };
+      }
+
+      // -- Visibility check --
+      case "is-visible": {
+        const el = qs(params.selector, params.index);
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        const visible =
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          parseFloat(style.opacity) !== 0 &&
+          (rect.width > 0 || rect.height > 0);
+        return { selector: params.selector, visible, rect: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) } };
+      }
+
+      // -- Get value (form elements) --
+      case "get-value": {
+        const el = qs(params.selector, params.index);
+        const tag = el.tagName.toLowerCase();
+        if (tag === "select") {
+          const opt = el.options[el.selectedIndex];
+          return { selector: params.selector, value: el.value, text: opt ? opt.text.trim() : null, selectedIndex: el.selectedIndex };
+        }
+        if (tag === "input" && (el.type === "checkbox" || el.type === "radio")) {
+          return { selector: params.selector, value: el.value, checked: el.checked };
+        }
+        if ("value" in el) {
+          return { selector: params.selector, value: el.value };
+        }
+        // contenteditable
+        return { selector: params.selector, value: el.textContent || "" };
+      }
+
+      // -- Snapshot: list interactive elements with refs --
+      case "snapshot": {
+        // Clear previous refs
+        document.querySelectorAll("[data-bctl-ref]").forEach((el) => el.removeAttribute("data-bctl-ref"));
+
+        const onlyInteractive = params.interactive !== false;
+        let refIndex = 0;
+        const refs = {};
+        const lines = [];
+
+        const INTERACTIVE_TAGS = new Set(["a", "button", "input", "textarea", "select", "summary"]);
+        const INTERACTIVE_ROLES = new Set([
+          "button", "link", "tab", "menuitem", "menuitemcheckbox", "menuitemradio",
+          "option", "checkbox", "radio", "switch", "textbox", "combobox",
+          "searchbox", "slider", "spinbutton", "treeitem",
+        ]);
+
+        function isInteractive(el) {
+          if (INTERACTIVE_TAGS.has(el.tagName.toLowerCase())) return true;
+          const role = el.getAttribute("role");
+          if (role && INTERACTIVE_ROLES.has(role)) return true;
+          if (el.contentEditable === "true" || el.contentEditable === "plaintext-only") return true;
+          if (el.hasAttribute("tabindex") && el.getAttribute("tabindex") !== "-1") return true;
+          if (el.hasAttribute("onclick")) return true;
+          return false;
+        }
+
+        function isVisible(el) {
+          // Skip hidden elements quickly
+          if (!el.offsetParent && getComputedStyle(el).position !== "fixed" && getComputedStyle(el).position !== "sticky") return false;
+          const style = getComputedStyle(el);
+          if (style.display === "none" || style.visibility === "hidden") return false;
+          if (parseFloat(style.opacity) === 0) return false;
+          const rect = el.getBoundingClientRect();
+          if (rect.width === 0 && rect.height === 0) return false;
+          return true;
+        }
+
+        function walk(el) {
+          if (!isVisible(el)) return;
+          const tag = el.tagName.toLowerCase();
+          const interactive = isInteractive(el);
+
+          if (!onlyInteractive || interactive) {
+            const ref = `e${refIndex}`;
+            el.setAttribute("data-bctl-ref", ref);
+
+            // Build compact description line
+            let desc = `[${ref}] ${tag}`;
+            if (el.type && tag === "input") desc += `[type=${el.type}]`;
+            if (el.id) desc += `#${el.id}`;
+            const role = el.getAttribute("role");
+            if (role) desc += `[role=${role}]`;
+
+            const text = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
+            if (text && text.length <= 60) desc += ` "${text}"`;
+            else if (text) desc += ` "${text.substring(0, 57)}..."`;
+
+            if (el.name) desc += ` name="${el.name}"`;
+            if (el.placeholder) desc += ` placeholder="${el.placeholder}"`;
+            if (tag === "a" && el.href) desc += ` href="${el.href}"`;
+            if (el.getAttribute("aria-label")) desc += ` aria-label="${el.getAttribute("aria-label")}"`;
+
+            lines.push(desc);
+            refs[ref] = {
+              tag,
+              ...(el.type && { type: el.type }),
+              ...(el.id && { id: el.id }),
+              ...(role && { role }),
+              ...(text && { text: text.substring(0, 100) }),
+              ...(el.name && { name: el.name }),
+              ...(tag === "a" && el.href && { href: el.href }),
+            };
+            refIndex++;
+          }
+
+          for (const child of el.children) {
+            walk(child);
+          }
+        }
+
+        walk(document.body);
+        return { url: location.href, title: document.title, snapshot: lines.join("\n"), refs, total: refIndex };
+      }
+
       default:
         throw new Error(`Unknown content operation: ${op}`);
     }
@@ -933,7 +1118,45 @@ async function contentScriptHandler(commands) {
   const results = [];
   for (const { op, params } of commands) {
     try {
-      if (op === "wait") {
+      if (op === "input-text") {
+        // Character-by-character typing (async — needs delays between chars)
+        const el = qs(params.selector, params.index, params.text);
+        el.focus();
+        el.scrollIntoView({ block: "center", behavior: "instant" });
+        const inputText = params.inputText || "";
+        const delay = params.delay || 10;
+
+        if (params.clear) {
+          if ("value" in el) {
+            const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+            if (nativeSetter) nativeSetter.call(el, "");
+            else el.value = "";
+          } else {
+            // contenteditable
+            el.textContent = "";
+          }
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+
+        for (const char of inputText) {
+          const keyOpts = { key: char, bubbles: true, cancelable: true };
+          el.dispatchEvent(new KeyboardEvent("keydown", keyOpts));
+          el.dispatchEvent(new KeyboardEvent("keypress", keyOpts));
+          if ("value" in el) {
+            el.value += char;
+          } else {
+            // contenteditable: use execCommand for best compatibility
+            document.execCommand("insertText", false, char);
+          }
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new KeyboardEvent("keyup", keyOpts));
+          if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+        }
+
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        results.push({ success: true, data: { typed: inputText, selector: params.selector, characters: inputText.length } });
+      } else if (op === "wait") {
         // Handle wait (sleep or selector polling) with async support
         if (params.seconds !== undefined && params.seconds !== null) {
           const seconds = parseFloat(params.seconds);

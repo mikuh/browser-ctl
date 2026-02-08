@@ -14,148 +14,23 @@ import os
 import platform
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
-import tempfile
-import time
-import urllib.error
-import urllib.request
 
-DEFAULT_PORT = 19876
-SERVER_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
-PID_FILE = os.path.join(tempfile.gettempdir(), f"bctl-{DEFAULT_PORT}.pid")
-
-BCTL_HOME = os.path.join(os.path.expanduser("~"), ".browser-ctl")
+from browser_ctl.client import (
+	BCTL_HOME,
+	DEFAULT_PORT,
+	ensure_server,
+	send_batch,
+	send_command,
+	send_raw,
+	stop_server,
+)
 
 SKILL_TARGETS = {
 	"cursor": os.path.join(os.path.expanduser("~"), ".cursor", "skills-cursor"),
 	"opencode": os.path.join(os.path.expanduser("~"), ".config", "opencode", "skills"),
 }
-
-# ---------------------------------------------------------------------------
-# Server management
-# ---------------------------------------------------------------------------
-
-
-def is_server_running() -> bool:
-	"""Check if bridge server is running (PID exists AND HTTP health check passes)."""
-	if not os.path.exists(PID_FILE):
-		return False
-	try:
-		with open(PID_FILE) as f:
-			pid = int(f.read().strip())
-		os.kill(pid, 0)  # Check process exists
-	except (OSError, ValueError):
-		return False
-	# Process exists — verify it is actually accepting HTTP connections.
-	# This avoids a race where the PID is still alive but the server is
-	# shutting down (port already closed).
-	try:
-		req = urllib.request.Request(f"{SERVER_URL}/health")
-		resp = urllib.request.urlopen(req, timeout=1)
-		return resp.status == 200
-	except Exception:
-		return False
-
-
-def start_server() -> bool:
-	"""Start bridge server as daemon. Returns True if started."""
-	if is_server_running():
-		return False
-
-	cmd = [sys.executable, "-m", "browser_ctl.server", "--port", str(DEFAULT_PORT), "--daemon"]
-	subprocess.Popen(
-		cmd,
-		start_new_session=True,
-		stdout=subprocess.DEVNULL,
-		stderr=subprocess.DEVNULL,
-	)
-
-	# Wait for server to become responsive
-	for _ in range(60):  # 3 seconds max
-		time.sleep(0.05)
-		try:
-			req = urllib.request.Request(f"{SERVER_URL}/health")
-			resp = urllib.request.urlopen(req, timeout=0.5)
-			if resp.status == 200:
-				return True
-		except Exception:
-			pass
-
-	print(json.dumps({"success": False, "error": "Failed to start bridge server"}))
-	sys.exit(1)
-
-
-def stop_server():
-	"""Stop bridge server and print JSON result."""
-	if not is_server_running():
-		print(json.dumps({"success": True, "data": {"stopped": False, "message": "Server is not running"}}))
-		return
-	result = send_raw("shutdown", {})
-	if result.get("success"):
-		# Wait briefly for server to fully stop and clean up PID file
-		for _ in range(20):
-			time.sleep(0.05)
-			if not is_server_running():
-				break
-		print(json.dumps({"success": True, "data": {"stopped": True}}))
-	else:
-		print(json.dumps(result, ensure_ascii=False))
-
-
-def ensure_server():
-	"""Make sure server is running, start if needed."""
-	if not is_server_running():
-		start_server()
-
-
-# ---------------------------------------------------------------------------
-# Command sending
-# ---------------------------------------------------------------------------
-
-
-def send_raw(action: str, params: dict) -> dict:
-	"""Send command to bridge server, return parsed response."""
-	body = json.dumps({"action": action, "params": params}).encode("utf-8")
-	req = urllib.request.Request(
-		f"{SERVER_URL}/command",
-		data=body,
-		headers={"Content-Type": "application/json"},
-	)
-	try:
-		resp = urllib.request.urlopen(req, timeout=35)
-		return json.loads(resp.read().decode("utf-8"))
-	except urllib.error.URLError as e:
-		return {"success": False, "error": f"Cannot connect to server: {e}"}
-	except json.JSONDecodeError:
-		return {"success": False, "error": "Invalid response from server"}
-
-
-def send_command(action: str, params: dict):
-	"""Ensure server, send command, print JSON result."""
-	ensure_server()
-	result = send_raw(action, params)
-	print(json.dumps(result, ensure_ascii=False))
-	if not result.get("success"):
-		sys.exit(1)
-
-
-def send_batch(commands: list[dict]) -> dict:
-	"""Send multiple commands to /batch endpoint, return parsed response."""
-	body = json.dumps({"commands": commands}).encode("utf-8")
-	req = urllib.request.Request(
-		f"{SERVER_URL}/batch",
-		data=body,
-		headers={"Content-Type": "application/json"},
-	)
-	try:
-		resp = urllib.request.urlopen(req, timeout=120)
-		return json.loads(resp.read().decode("utf-8"))
-	except urllib.error.URLError as e:
-		return {"success": False, "error": f"Cannot connect to server: {e}"}
-	except json.JSONDecodeError:
-		return {"success": False, "error": "Invalid response from server"}
 
 
 def _parse_command_string(line: str, parser: argparse.ArgumentParser) -> tuple[str, dict] | None:
@@ -183,8 +58,11 @@ def _parse_command_string(line: str, parser: argparse.ArgumentParser) -> tuple[s
 # chrome.scripting.executeScript call.  "eval" is excluded because it uses
 # MAIN-world script-tag injection + CDP debugger fallback.
 CONTENT_SCRIPT_OPS = frozenset({
-	"click", "hover", "type", "press", "text", "html", "attr",
-	"select", "count", "scroll", "select-option", "drag", "wait",
+	"click", "dblclick", "hover", "focus", "type", "input-text",
+	"press", "check", "uncheck",
+	"text", "html", "attr", "select", "count", "snapshot",
+	"is-visible", "get-value",
+	"scroll", "select-option", "drag", "wait",
 })
 
 
@@ -310,31 +188,60 @@ def build_parser() -> argparse.ArgumentParser:
 
 	# -- Interaction --
 	p = sub.add_parser("click", help="Click an element")
-	p.add_argument("selector", help="CSS selector")
+	p.add_argument("selector", help="CSS selector or element ref (e.g. e5 from snapshot)")
 	p.add_argument("-i", "--index", type=int, default=None, help="Click Nth matching element (0-based, negative from end)")
 	p.add_argument("-t", "--text", default=None, help="Filter by visible text content (substring match)")
 
+	p = sub.add_parser("dblclick", help="Double-click an element")
+	p.add_argument("selector", help="CSS selector or element ref")
+	p.add_argument("-i", "--index", type=int, default=None, help="Nth matching element (0-based)")
+	p.add_argument("-t", "--text", default=None, help="Filter by visible text content")
+
 	p = sub.add_parser("hover", help="Hover over an element (trigger mouseover)")
-	p.add_argument("selector", help="CSS selector")
+	p.add_argument("selector", help="CSS selector or element ref")
 	p.add_argument("-i", "--index", type=int, default=None, help="Hover Nth matching element (0-based)")
 	p.add_argument("-t", "--text", default=None, help="Filter by visible text content (substring match)")
 
-	p = sub.add_parser("type", help="Type text into an element")
-	p.add_argument("selector", help="CSS selector")
+	p = sub.add_parser("focus", help="Focus an element")
+	p.add_argument("selector", help="CSS selector or element ref")
+	p.add_argument("-i", "--index", type=int, default=None, help="Nth matching element (0-based)")
+	p.add_argument("-t", "--text", default=None, help="Filter by visible text content")
+
+	p = sub.add_parser("type", help="Type text into an element (replaces existing value)")
+	p.add_argument("selector", help="CSS selector or element ref")
 	p.add_argument("text", help="Text to type")
+
+	p = sub.add_parser("input-text", help="Type text character-by-character (for rich text editors)")
+	p.add_argument("selector", help="CSS selector or element ref")
+	p.add_argument("text", help="Text to type")
+	p.add_argument("--clear", action="store_true", help="Clear existing content before typing")
+	p.add_argument("--delay", type=int, default=10, help="Delay between characters in ms (default: 10)")
+
+	p = sub.add_parser("check", help="Check a checkbox or radio button")
+	p.add_argument("selector", help="CSS selector or element ref")
+	p.add_argument("-i", "--index", type=int, default=None, help="Nth matching element (0-based)")
+	p.add_argument("-t", "--text", default=None, help="Filter by visible text content")
+
+	p = sub.add_parser("uncheck", help="Uncheck a checkbox")
+	p.add_argument("selector", help="CSS selector or element ref")
+	p.add_argument("-i", "--index", type=int, default=None, help="Nth matching element (0-based)")
+	p.add_argument("-t", "--text", default=None, help="Filter by visible text content")
 
 	p = sub.add_parser("press", help="Press a keyboard key")
 	p.add_argument("key", help="Key name (Enter, Escape, Tab, etc.)")
 
 	# -- Query --
+	p = sub.add_parser("snapshot", aliases=["snap"], help="List all interactive elements with refs (e0, e1, …)")
+	p.add_argument("--all", action="store_true", help="Include non-interactive elements")
+
 	p = sub.add_parser("text", help="Get text content of an element")
-	p.add_argument("selector", nargs="?", default=None, help="CSS selector (default: body)")
+	p.add_argument("selector", nargs="?", default=None, help="CSS selector or element ref (default: body)")
 
 	p = sub.add_parser("html", help="Get innerHTML of an element")
-	p.add_argument("selector", nargs="?", default=None, help="CSS selector (default: body)")
+	p.add_argument("selector", nargs="?", default=None, help="CSS selector or element ref (default: body)")
 
 	p = sub.add_parser("attr", help="Get attribute(s) of an element")
-	p.add_argument("selector", help="CSS selector")
+	p.add_argument("selector", help="CSS selector or element ref")
 	p.add_argument("name", nargs="?", default=None, help="Attribute name (omit for all)")
 	p.add_argument("-i", "--index", type=int, default=None, help="Get Nth matching element (0-based)")
 
@@ -346,6 +253,14 @@ def build_parser() -> argparse.ArgumentParser:
 	p.add_argument("selector", help="CSS selector")
 
 	sub.add_parser("status", help="Get current page URL and title")
+
+	p = sub.add_parser("is-visible", help="Check if an element is visible")
+	p.add_argument("selector", help="CSS selector or element ref")
+	p.add_argument("-i", "--index", type=int, default=None, help="Nth matching element (0-based)")
+
+	p = sub.add_parser("get-value", help="Get value of a form element")
+	p.add_argument("selector", help="CSS selector or element ref")
+	p.add_argument("-i", "--index", type=int, default=None, help="Nth matching element (0-based)")
 
 	# -- JavaScript --
 	p = sub.add_parser("eval", help="Execute JavaScript in page context")
@@ -624,6 +539,7 @@ _ALIASES = {
 	"sel": "select",
 	"dl": "download",
 	"sopt": "select-option",
+	"snap": "snapshot",
 }
 
 
@@ -644,12 +560,24 @@ def args_to_action_params(cmd: str, args) -> tuple[str, dict]:
 		params = {"url": url}
 	elif cmd == "click":
 		params = {"selector": args.selector, "index": args.index, "text": args.text}
+	elif cmd == "dblclick":
+		params = {"selector": args.selector, "index": args.index, "text": args.text}
 	elif cmd == "hover":
+		params = {"selector": args.selector, "index": args.index, "text": args.text}
+	elif cmd == "focus":
 		params = {"selector": args.selector, "index": args.index, "text": args.text}
 	elif cmd == "type":
 		params = {"selector": args.selector, "text": args.text}
+	elif cmd == "input-text":
+		params = {"selector": args.selector, "inputText": args.text, "clear": args.clear, "delay": args.delay}
+	elif cmd == "check":
+		params = {"selector": args.selector, "index": args.index, "text": args.text}
+	elif cmd == "uncheck":
+		params = {"selector": args.selector, "index": args.index, "text": args.text}
 	elif cmd == "press":
 		params = {"key": args.key}
+	elif cmd == "snapshot":
+		params = {"interactive": not getattr(args, "all", False)}
 	elif cmd == "text":
 		params = {"selector": args.selector}
 	elif cmd == "html":
@@ -660,6 +588,10 @@ def args_to_action_params(cmd: str, args) -> tuple[str, dict]:
 		params = {"selector": args.selector, "limit": args.limit}
 	elif cmd == "count":
 		params = {"selector": args.selector}
+	elif cmd == "is-visible":
+		params = {"selector": args.selector, "index": args.index}
+	elif cmd == "get-value":
+		params = {"selector": args.selector, "index": args.index}
 	elif cmd == "eval":
 		params = {"code": args.code}
 	elif cmd == "tab":

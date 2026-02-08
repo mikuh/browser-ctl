@@ -115,12 +115,19 @@ bctl ping
 
 ### Interaction
 
+All `<sel>` arguments accept CSS selectors **or** element refs from `snapshot` (e.g. `e5`).
+
 | Command | Description |
 |---------|-------------|
 | `bctl click <sel> [-i N] [-t text]` | Click element; `-t` filters by visible text (substring) |
+| `bctl dblclick <sel> [-i N] [-t text]` | Double-click element |
 | `bctl hover <sel> [-i N] [-t text]` | Hover over element; `-t` filters by visible text |
-| `bctl type <sel> <text>` | Type text into input/textarea (React-compatible) |
+| `bctl focus <sel> [-i N] [-t text]` | Focus element |
+| `bctl type <sel> <text>` | Type text into input/textarea (React-compatible, replaces value) |
+| `bctl input-text <sel> <text>` | Char-by-char typing for rich text editors `[--clear] [--delay ms]` |
 | `bctl press <key>` | Press key — Enter submits forms, Escape closes dialogs |
+| `bctl check <sel> [-i N] [-t text]` | Check a checkbox or radio button |
+| `bctl uncheck <sel> [-i N] [-t text]` | Uncheck a checkbox |
 | `bctl scroll <dir\|sel> [px]` | Scroll: `up` / `down` / `top` / `bottom` or element into view |
 | `bctl select-option <sel> <val>` | Select dropdown option &nbsp; *(alias: `sopt`)* `[--text]` |
 | `bctl drag <src> [target]` | Drag to element or offset `[--dx N --dy N]` |
@@ -129,12 +136,15 @@ bctl ping
 
 | Command | Description |
 |---------|-------------|
+| `bctl snapshot [--all]` | List interactive elements with refs `e0`, `e1`, … &nbsp; *(alias: `snap`)* |
 | `bctl text [sel]` | Get text content (default: `body`) |
 | `bctl html [sel]` | Get innerHTML |
 | `bctl attr <sel> [name] [-i N]` | Get attribute(s) of element |
 | `bctl select <sel> [-l N]` | List matching elements &nbsp; *(alias: `sel`)* |
 | `bctl count <sel>` | Count matching elements |
 | `bctl status` | Current page URL and title |
+| `bctl is-visible <sel> [-i N]` | Check if element is visible (returns bounding rect) |
+| `bctl get-value <sel> [-i N]` | Get value of form element (input / select / textarea) |
 
 ### JavaScript
 
@@ -184,6 +194,19 @@ bctl ping
 <br>
 
 ## Examples
+
+<details open>
+<summary><b>Snapshot workflow (recommended for AI agents)</b></summary>
+
+```bash
+bctl go "https://example.com"
+bctl snapshot                          # List all interactive elements as e0, e1, …
+bctl click e3                          # Click by ref — no CSS selector needed
+bctl type e5 "hello world"            # Type into element by ref
+bctl get-value e5                      # Read form value
+bctl is-visible e3                     # Check visibility
+```
+</details>
 
 <details>
 <summary><b>Search and extract</b></summary>

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Browser-Ctl",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Developer tool for CLI-driven browser automation. Control Chrome via command-line — navigate, click, type, query DOM, capture screenshots, and download files, all through a local WebSocket bridge.",
   "permissions": [
     "tabs",

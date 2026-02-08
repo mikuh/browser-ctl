@@ -115,12 +115,19 @@ bctl ping
 
 ### 交互
 
+所有 `<sel>` 参数既支持 CSS 选择器，也支持 `snapshot` 的元素引用（如 `e5`）。
+
 | 命令 | 说明 |
 |------|------|
 | `bctl click <sel> [-i N] [-t text]` | 点击元素；`-t` 按可见文本过滤（子串匹配） |
+| `bctl dblclick <sel> [-i N] [-t text]` | 双击元素 |
 | `bctl hover <sel> [-i N] [-t text]` | 悬停在元素上；`-t` 按可见文本过滤 |
-| `bctl type <sel> <text>` | 在 input/textarea 中输入文本（兼容 React） |
+| `bctl focus <sel> [-i N] [-t text]` | 聚焦元素 |
+| `bctl type <sel> <text>` | 在 input/textarea 中输入文本（兼容 React，替换原有值） |
+| `bctl input-text <sel> <text>` | 逐字符输入，适配富文本编辑器 `[--clear] [--delay ms]` |
 | `bctl press <key>` | 按下键盘键 — Enter 提交表单，Escape 关闭弹窗 |
+| `bctl check <sel> [-i N] [-t text]` | 勾选复选框或单选按钮 |
+| `bctl uncheck <sel> [-i N] [-t text]` | 取消勾选复选框 |
 | `bctl scroll <方向\|sel> [像素]` | 滚动：`up` / `down` / `top` / `bottom` 或将元素滚动到视口 |
 | `bctl select-option <sel> <val>` | 选择下拉选项 &nbsp; *（别名：`sopt`）* `[--text]` |
 | `bctl drag <src> [target]` | 拖拽到元素或偏移位置 `[--dx N --dy N]` |
@@ -129,12 +136,15 @@ bctl ping
 
 | 命令 | 说明 |
 |------|------|
+| `bctl snapshot [--all]` | 列出可交互元素并分配引用 `e0`、`e1`、… &nbsp; *（别名：`snap`）* |
 | `bctl text [sel]` | 获取文本内容（默认：`body`） |
 | `bctl html [sel]` | 获取 innerHTML |
 | `bctl attr <sel> [name] [-i N]` | 获取元素属性 |
 | `bctl select <sel> [-l N]` | 列出匹配元素 &nbsp; *（别名：`sel`）* |
 | `bctl count <sel>` | 计数匹配元素 |
 | `bctl status` | 当前页面 URL 和标题 |
+| `bctl is-visible <sel> [-i N]` | 检查元素是否可见（返回边界框） |
+| `bctl get-value <sel> [-i N]` | 获取表单元素值（input / select / textarea） |
 
 ### JavaScript
 
@@ -184,6 +194,19 @@ bctl ping
 <br>
 
 ## 示例
+
+<details open>
+<summary><b>Snapshot 工作流（推荐 AI Agent 使用）</b></summary>
+
+```bash
+bctl go "https://example.com"
+bctl snapshot                          # 列出所有可交互元素，标记为 e0、e1、…
+bctl click e3                          # 通过引用点击 — 无需 CSS 选择器
+bctl type e5 "hello world"            # 通过引用输入文本
+bctl get-value e5                      # 读取表单值
+bctl is-visible e3                     # 检查可见性
+```
+</details>
 
 <details>
 <summary><b>搜索并提取</b></summary>
