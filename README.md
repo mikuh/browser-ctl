@@ -21,8 +21,9 @@
 pip install browser-ctl
 
 bctl go https://github.com
-bctl click "a.search-button"
-bctl type "input[name=q]" "browser-ctl"
+bctl snapshot                        # List interactive elements → e0, e1, e2, …
+bctl click e3                        # Click by ref — no CSS selector needed
+bctl type e5 "browser-ctl"          # Type into element by ref
 bctl press Enter
 bctl screenshot results.png
 ```
@@ -48,11 +49,12 @@ Tools like [browser-use](https://github.com/browser-use/browser-use), [Playwrigh
 
 browser-ctl is purpose-built for AI agent workflows:
 
+- **Snapshot-first workflow** — `bctl snapshot` lists interactive elements as `e0`, `e1`, … then operate by ref (`bctl click e3`) — no CSS selector guessing
 - **Tool-calling ready** — every command is a single shell call returning structured JSON, perfect for function-calling / tool-use patterns
 - **Built-in AI skill** — ships with `SKILL.md` that teaches AI agents (Cursor, OpenCode, etc.) the full command set and best practices
 - **Real browser = real access** — your LLM can operate on authenticated pages (Gmail, Jira, internal tools) without credential management
-- **Deterministic output** — JSON responses with CSS-selector-based queries, no vision model needed for most tasks
-- **Minimal token cost** — `bctl select "a.link" -l 5` returns structured data in one call vs multi-step screenshot → vision → parse loops
+- **Deterministic output** — JSON responses with element refs or CSS selectors, no vision model needed for most tasks
+- **Minimal token cost** — `bctl snapshot` + `bctl click e5` vs multi-step screenshot → vision → parse loops
 
 ```bash
 # Install the AI skill for Cursor IDE in one command

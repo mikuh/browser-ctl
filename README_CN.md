@@ -21,8 +21,9 @@
 pip install browser-ctl
 
 bctl go https://github.com
-bctl click "a.search-button"
-bctl type "input[name=q]" "browser-ctl"
+bctl snapshot                        # 列出可交互元素 → e0, e1, e2, …
+bctl click e3                        # 通过引用点击 — 无需 CSS 选择器
+bctl type e5 "browser-ctl"          # 通过引用输入文本
 bctl press Enter
 bctl screenshot results.png
 ```
@@ -48,11 +49,12 @@ bctl screenshot results.png
 
 browser-ctl 专为 AI Agent 工作流设计：
 
+- **Snapshot 优先** — `bctl snapshot` 列出页面可交互元素并标记为 `e0`、`e1`、…，直接用引用操作（`bctl click e3`）— 无需猜测 CSS 选择器
 - **天然适配 tool-calling** — 每个命令都是一次 Shell 调用 + 结构化 JSON 返回，完美契合 function-calling / tool-use 模式
 - **内置 AI 技能文件** — 自带 `SKILL.md`，可直接教会 AI Agent（Cursor、OpenCode 等）完整的命令集和最佳实践
 - **真实浏览器 = 真实访问** — 你的 LLM 可以直接操作已登录的页面（Gmail、Jira、内部工具），无需管理凭证
-- **确定性输出** — 基于 CSS 选择器的 JSON 响应，大多数任务无需视觉模型
-- **最小 Token 开销** — `bctl select "a.link" -l 5` 一次调用返回结构化数据，避免"截图 → 视觉模型 → 解析"的多步循环
+- **确定性输出** — 基于元素引用或 CSS 选择器的 JSON 响应，大多数任务无需视觉模型
+- **最小 Token 开销** — `bctl snapshot` + `bctl click e5` 即可完成交互，避免"截图 → 视觉模型 → 解析"的多步循环
 
 ```bash
 # 一条命令为 Cursor IDE 安装 AI 技能
