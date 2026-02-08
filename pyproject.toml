@@ -2,10 +2,33 @@
 name = "browser-ctl"
 version = "0.1.0"
 description = "Control your browser from the command line via a Chrome extension + WebSocket bridge"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
+authors = [
+    { name = "geb", email = "853934146@qq.com" },
+]
+keywords = ["browser", "automation", "chrome", "cli", "websocket", "devtools"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+]
 dependencies = [
     "aiohttp>=3.9",
 ]
+
+[project.urls]
+Homepage = "https://github.com/mikuh/browser-ctl"
+Repository = "https://github.com/mikuh/browser-ctl"
+Issues = "https://github.com/mikuh/browser-ctl/issues"
 
 [project.scripts]
 bctl = "browser_ctl.cli:main"
