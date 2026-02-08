@@ -1052,7 +1052,10 @@ async function contentScriptHandler(commands) {
         }
 
         function isVisible(el) {
-          // Skip hidden elements quickly
+          // body/html are always considered visible (root containers)
+          if (el === document.body || el === document.documentElement) return true;
+          // Skip hidden elements quickly — offsetParent is null for
+          // display:none, detached elements, and <body>/<html> (handled above).
           if (!el.offsetParent && getComputedStyle(el).position !== "fixed" && getComputedStyle(el).position !== "sticky") return false;
           const style = getComputedStyle(el);
           if (style.display === "none" || style.visibility === "hidden") return false;
