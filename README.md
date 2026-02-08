@@ -5,8 +5,8 @@
 <h1 align="center">browser-ctl</h1>
 
 <p align="center">
-  <strong>Control Chrome from your terminal.</strong><br>
-  A lightweight CLI for browser automation — navigate, click, type, scroll, screenshot, and more.
+  <strong>Browser automation built for AI agents.</strong><br>
+  Give your LLM a real Chrome browser — with your sessions, cookies, and extensions — through simple CLI commands.
 </p>
 
 <p align="center">
@@ -29,27 +29,48 @@ bctl screenshot results.png
 
 <br>
 
-## Highlights
+## The Problem with Existing Browser Automation
 
-| | Feature | |
+Tools like [browser-use](https://github.com/browser-use/browser-use), [Playwright MCP](https://github.com/microsoft/playwright-mcp), and [Puppeteer](https://github.com/puppeteer/puppeteer) are powerful, but they share a set of pain points when used with AI agents:
+
+| Pain point | Typical tools | browser-ctl |
 |---|---|---|
-| **Zero-config** | Single `bctl` command, JSON output, works in any shell or script | No setup headaches |
-| **No browser binary** | Uses your existing Chrome with a lightweight extension | No Puppeteer/Playwright install |
-| **Stdlib-only CLI** | The CLI has zero external Python dependencies | Minimal footprint |
-| **AI-agent friendly** | Ships with `SKILL.md` for Cursor / OpenCode integration | Built for LLM workflows |
-| **Local & private** | All communication on `localhost`, nothing leaves your machine | Privacy by design |
+| **Heavy browser binaries** — must download and manage a bundled Chromium (~400 MB) | Playwright, Puppeteer | Uses your existing Chrome — zero browser downloads |
+| **No access to real sessions** — launches a fresh, empty browser with no cookies, logins, or extensions | browser-use, Playwright MCP | Controls your real Chrome — all sessions, cookies, and extensions intact |
+| **Anti-bot detection** — headless browsers are flagged and blocked by many websites | Puppeteer, Playwright | Uses your real browser profile — indistinguishable from normal browsing |
+| **Complex SDK integration** — requires importing libraries and writing async code | browser-use, Stagehand | Pure CLI with JSON output — any LLM can call `bctl click "button"` |
+| **Heavy dependencies** — Playwright alone pulls ~50 MB of packages + browser binary | Playwright, Puppeteer | CLI is stdlib-only; server needs only `aiohttp` |
+| **Token-inefficient for LLMs** — verbose API calls waste context window tokens | SDK-based tools | Concise commands: `bctl text h1` vs pages of boilerplate |
+
+<br>
+
+## Designed for LLM Agents
+
+browser-ctl is purpose-built for AI agent workflows:
+
+- **Tool-calling ready** — every command is a single shell call returning structured JSON, perfect for function-calling / tool-use patterns
+- **Built-in AI skill** — ships with `SKILL.md` that teaches AI agents (Cursor, OpenCode, etc.) the full command set and best practices
+- **Real browser = real access** — your LLM can operate on authenticated pages (Gmail, Jira, internal tools) without credential management
+- **Deterministic output** — JSON responses with CSS-selector-based queries, no vision model needed for most tasks
+- **Minimal token cost** — `bctl select "a.link" -l 5` returns structured data in one call vs multi-step screenshot → vision → parse loops
+
+```bash
+# Install the AI skill for Cursor IDE in one command
+bctl setup cursor
+```
 
 <br>
 
 ## How It Works
 
 ```
-Terminal (bctl)  ──HTTP──▶  Bridge Server  ◀──WebSocket──  Chrome Extension
+AI Agent / Terminal  ──HTTP──▶  Bridge Server  ◀──WebSocket──  Chrome Extension
+     (bctl CLI)                  (:19876)                      (your browser)
 ```
 
 1. **CLI** (`bctl`) sends commands via HTTP to a local bridge server
 2. **Bridge server** relays them over WebSocket to the Chrome extension
-3. **Extension** executes commands using Chrome APIs & content scripts
+3. **Extension** executes commands using Chrome APIs & content scripts in your real browser
 4. Results flow back the same path as JSON
 
 > The bridge server auto-starts on first command — no manual setup needed.
@@ -223,20 +244,6 @@ bctl text ".metric-value"
 
 <br>
 
-## AI Agent Integration
-
-browser-ctl ships with a `SKILL.md` designed for AI coding assistants:
-
-```bash
-bctl setup cursor       # Cursor IDE
-bctl setup opencode     # OpenCode
-bctl setup /path/to/dir # Custom directory
-```
-
-Once installed, AI agents can use `bctl` commands to automate browser tasks on your behalf.
-
-<br>
-
 ## Output Format
 
 All commands return JSON to stdout:
@@ -257,7 +264,7 @@ Non-zero exit code on errors — works naturally with `set -e` and `&&` chains.
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  Terminal                                           │
+│  AI Agent / Terminal                                │
 │  $ bctl click "button.submit"                       │
 │       │                                             │
 │       ▼  HTTP POST localhost:19876/command           │
@@ -274,7 +281,7 @@ Non-zero exit code on errors — works naturally with `set -e` and `&&` chains.
 │             │  chrome.scripting / chrome.debugger    │
 │             ▼                                       │
 │  ┌──────────────────────┐                           │
-│  │  Web Page            │                           │
+│  │  Your Real Browser   │  (sessions, cookies, etc) │
 │  └──────────────────────┘                           │
 └─────────────────────────────────────────────────────┘
 ```

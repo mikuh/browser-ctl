@@ -5,8 +5,8 @@
 <h1 align="center">browser-ctl</h1>
 
 <p align="center">
-  <strong>从终端控制 Chrome 浏览器。</strong><br>
-  一个轻量级的命令行浏览器自动化工具 — 导航、点击、输入、滚动、截图，一切尽在掌握。
+  <strong>为 AI Agent 打造的浏览器自动化工具。</strong><br>
+  让你的 LLM 直接控制一个真实的 Chrome 浏览器 — 保留你的登录会话、Cookie 和扩展，只需简单的命令行调用。
 </p>
 
 <p align="center">
@@ -29,27 +29,48 @@ bctl screenshot results.png
 
 <br>
 
-## 特性
+## 现有浏览器自动化工具的痛点
 
-| | 特性 | |
-|---|---|---|
-| **零配置** | 单一 `bctl` 命令，JSON 输出，适用于任何 Shell 或脚本 | 开箱即用 |
-| **无需管理浏览器** | 直接使用你已安装的 Chrome，配合轻量级扩展 | 无需 Puppeteer/Playwright |
-| **CLI 零依赖** | CLI 本身仅使用 Python 标准库 | 极小体积 |
-| **AI Agent 友好** | 内置 `SKILL.md`，支持 Cursor / OpenCode 集成 | 为 LLM 工作流而生 |
-| **本地且私密** | 所有通信都在 `localhost` 上，数据不会离开设备 | 隐私优先 |
+[browser-use](https://github.com/browser-use/browser-use)、[Playwright MCP](https://github.com/microsoft/playwright-mcp)、[Puppeteer](https://github.com/puppeteer/puppeteer) 等工具很强大，但在 AI Agent 场景下都有一系列共同的痛点：
+
+| 痛点 | 传统工具 | browser-ctl |
+|------|---------|-------------|
+| **需要下载浏览器二进制文件** — 必须下载并管理内置 Chromium（约 400 MB） | Playwright、Puppeteer | 直接使用你已安装的 Chrome — 零浏览器下载 |
+| **无法访问真实会话** — 启动全新的空白浏览器，无 Cookie、无登录状态、无扩展 | browser-use、Playwright MCP | 控制你的真实 Chrome — 所有会话、Cookie、扩展完整保留 |
+| **被反爬虫检测** — 无头浏览器会被大量网站识别并拦截 | Puppeteer、Playwright | 使用真实浏览器配置文件 — 与正常浏览无异 |
+| **复杂的 SDK 集成** — 需要导入库、编写异步代码 | browser-use、Stagehand | 纯 CLI + JSON 输出 — 任何 LLM 都能调用 `bctl click "button"` |
+| **依赖沉重** — 仅 Playwright 就需要约 50 MB 包 + 浏览器二进制文件 | Playwright、Puppeteer | CLI 零外部依赖；服务器仅需 `aiohttp` |
+| **对 LLM 不友好** — 冗长的 API 调用浪费上下文窗口 Token | SDK 类工具 | 简洁命令：`bctl text h1` vs 大量模板代码 |
+
+<br>
+
+## 为 LLM Agent 而生
+
+browser-ctl 专为 AI Agent 工作流设计：
+
+- **天然适配 tool-calling** — 每个命令都是一次 Shell 调用 + 结构化 JSON 返回，完美契合 function-calling / tool-use 模式
+- **内置 AI 技能文件** — 自带 `SKILL.md`，可直接教会 AI Agent（Cursor、OpenCode 等）完整的命令集和最佳实践
+- **真实浏览器 = 真实访问** — 你的 LLM 可以直接操作已登录的页面（Gmail、Jira、内部工具），无需管理凭证
+- **确定性输出** — 基于 CSS 选择器的 JSON 响应，大多数任务无需视觉模型
+- **最小 Token 开销** — `bctl select "a.link" -l 5` 一次调用返回结构化数据，避免"截图 → 视觉模型 → 解析"的多步循环
+
+```bash
+# 一条命令为 Cursor IDE 安装 AI 技能
+bctl setup cursor
+```
 
 <br>
 
 ## 工作原理
 
 ```
-终端 (bctl)  ──HTTP──▶  桥接服务器  ◀──WebSocket──  Chrome 扩展
+AI Agent / 终端  ──HTTP──▶  桥接服务器  ◀──WebSocket──  Chrome 扩展
+   (bctl CLI)                (:19876)                  (你的浏览器)
 ```
 
 1. **CLI**（`bctl`）通过 HTTP 向本地桥接服务器发送命令
 2. **桥接服务器**通过 WebSocket 将命令转发给 Chrome 扩展
-3. **扩展**使用 Chrome API 和内容脚本执行命令
+3. **扩展**在你的真实浏览器中使用 Chrome API 和内容脚本执行命令
 4. 结果以 JSON 格式沿相同路径返回
 
 > 桥接服务器在首次执行命令时自动启动，无需手动设置。
@@ -223,20 +244,6 @@ bctl text ".metric-value"
 
 <br>
 
-## AI Agent 集成
-
-browser-ctl 内置了专为 AI 编程助手设计的 `SKILL.md`：
-
-```bash
-bctl setup cursor       # Cursor IDE
-bctl setup opencode     # OpenCode
-bctl setup /path/to/dir # 自定义目录
-```
-
-安装后，AI Agent 可以使用 `bctl` 命令代你自动化浏览器操作。
-
-<br>
-
 ## 输出格式
 
 所有命令以 JSON 格式输出到 stdout：
@@ -257,7 +264,7 @@ bctl setup /path/to/dir # 自定义目录
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  终端                                               │
+│  AI Agent / 终端                                    │
 │  $ bctl click "button.submit"                       │
 │       │                                             │
 │       ▼  HTTP POST localhost:19876/command           │
@@ -274,7 +281,7 @@ bctl setup /path/to/dir # 自定义目录
 │             │  chrome.scripting / chrome.debugger    │
 │             ▼                                       │
 │  ┌──────────────────────┐                           │
-│  │  网页                 │                           │
+│  │  你的真实浏览器        │  (会话、Cookie 等)        │
 │  └──────────────────────┘                           │
 └─────────────────────────────────────────────────────┘
 ```
