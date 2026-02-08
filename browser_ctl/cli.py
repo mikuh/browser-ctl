@@ -164,10 +164,12 @@ def build_parser() -> argparse.ArgumentParser:
 	p = sub.add_parser("click", help="Click an element")
 	p.add_argument("selector", help="CSS selector")
 	p.add_argument("-i", "--index", type=int, default=None, help="Click Nth matching element (0-based, negative from end)")
+	p.add_argument("-t", "--text", default=None, help="Filter by visible text content (substring match)")
 
 	p = sub.add_parser("hover", help="Hover over an element (trigger mouseover)")
 	p.add_argument("selector", help="CSS selector")
 	p.add_argument("-i", "--index", type=int, default=None, help="Hover Nth matching element (0-based)")
+	p.add_argument("-t", "--text", default=None, help="Filter by visible text content (substring match)")
 
 	p = sub.add_parser("type", help="Type text into an element")
 	p.add_argument("selector", help="CSS selector")
@@ -514,9 +516,9 @@ def main():
 			url = "https://" + url
 		params = {"url": url}
 	elif cmd == "click":
-		params = {"selector": args.selector, "index": args.index}
+		params = {"selector": args.selector, "index": args.index, "text": args.text}
 	elif cmd == "hover":
-		params = {"selector": args.selector, "index": args.index}
+		params = {"selector": args.selector, "index": args.index, "text": args.text}
 	elif cmd == "type":
 		params = {"selector": args.selector, "text": args.text}
 	elif cmd == "press":

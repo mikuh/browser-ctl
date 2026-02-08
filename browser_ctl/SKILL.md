@@ -30,9 +30,9 @@ bctl reload               Reload page
 
 ### Interaction
 ```
-bctl click <sel> [-i N]   Click element (CSS selector, optional index)
-bctl hover <sel> [-i N]   Hover over element
-bctl type <sel> <text>    Type text into element
+bctl click <sel> [-i N] [-t text]  Click element; -t filters by visible text (substring)
+bctl hover <sel> [-i N] [-t text]  Hover over element; -t filters by visible text
+bctl type <sel> <text>    Type text into element (React-compatible)
 bctl press <key>          Press key — Enter submits forms, Escape closes dialogs
 bctl scroll <dir|sel> [n] Scroll page: up/down/top/bottom or element into view
 bctl select-option <sel> <val> [--text]  Select <select> dropdown option (alias: sopt)
@@ -117,6 +117,14 @@ bctl attr ".result-item a" href -i 0              # Get specific attribute
   before querying — SPAs like YouTube take time to render content.
 - Prefer waiting for a specific element over a fixed delay when possible.
 
+### Clicking by Text (SPA-friendly)
+- Use `--text` (`-t`) to filter elements by visible text — ideal for SPAs (React,
+  Vue, etc.) where CSS class names are dynamically generated and unreliable.
+- Example: `bctl click "button" -t "Submit"` clicks the first `<button>` whose
+  visible text contains "Submit" (case-insensitive substring match).
+- This avoids fragile selectors like `button.css-1a2b3c4` and eliminates the need
+  for `bctl eval 'document.querySelector(...).click()'` workarounds.
+
 ### Shell Quoting
 - Wrap CSS selectors in double quotes: `bctl click "button.submit"`
 - For `bctl eval`, use double quotes for the outer string and single quotes inside:
@@ -130,8 +138,9 @@ bctl go https://example.com
 bctl status
 bctl text h1
 
-# Click and type
+# Click by selector or by text
 bctl click "button.login"
+bctl click "button" -t "Sign in"           # click button containing "Sign in"
 bctl type "input[name=q]" "search query"
 bctl press Enter
 

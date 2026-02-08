@@ -117,9 +117,9 @@ bctl ping
 
 | Command | Description |
 |---------|-------------|
-| `bctl click <sel> [-i N]` | Click element (CSS selector, optional Nth match) |
-| `bctl hover <sel> [-i N]` | Hover over element |
-| `bctl type <sel> <text>` | Type text into input/textarea |
+| `bctl click <sel> [-i N] [-t text]` | Click element; `-t` filters by visible text (substring) |
+| `bctl hover <sel> [-i N] [-t text]` | Hover over element; `-t` filters by visible text |
+| `bctl type <sel> <text>` | Type text into input/textarea (React-compatible) |
 | `bctl press <key>` | Press key — Enter submits forms, Escape closes dialogs |
 | `bctl scroll <dir\|sel> [px]` | Scroll: `up` / `down` / `top` / `bottom` or element into view |
 | `bctl select-option <sel> <val>` | Select dropdown option &nbsp; *(alias: `sopt`)* `[--text]` |
@@ -184,6 +184,16 @@ bctl ping
 ```bash
 bctl go "https://news.ycombinator.com"
 bctl select "a.titlelink" -l 5       # Top 5 links with text, href, etc.
+```
+</details>
+
+<details>
+<summary><b>Click by visible text (SPA-friendly)</b></summary>
+
+```bash
+bctl click "button" -t "Sign in"        # Click button containing "Sign in"
+bctl click "a" -t "Settings"            # Click link containing "Settings"
+bctl click "div[role=button]" -t "Save" # Works with any element + text filter
 ```
 </details>
 

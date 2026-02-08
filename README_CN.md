@@ -117,9 +117,9 @@ bctl ping
 
 | 命令 | 说明 |
 |------|------|
-| `bctl click <sel> [-i N]` | 点击元素（CSS 选择器，可选第 N 个匹配项） |
-| `bctl hover <sel> [-i N]` | 悬停在元素上 |
-| `bctl type <sel> <text>` | 在 input/textarea 中输入文本 |
+| `bctl click <sel> [-i N] [-t text]` | 点击元素；`-t` 按可见文本过滤（子串匹配） |
+| `bctl hover <sel> [-i N] [-t text]` | 悬停在元素上；`-t` 按可见文本过滤 |
+| `bctl type <sel> <text>` | 在 input/textarea 中输入文本（兼容 React） |
 | `bctl press <key>` | 按下键盘键 — Enter 提交表单，Escape 关闭弹窗 |
 | `bctl scroll <方向\|sel> [像素]` | 滚动：`up` / `down` / `top` / `bottom` 或将元素滚动到视口 |
 | `bctl select-option <sel> <val>` | 选择下拉选项 &nbsp; *（别名：`sopt`）* `[--text]` |
@@ -184,6 +184,16 @@ bctl ping
 ```bash
 bctl go "https://news.ycombinator.com"
 bctl select "a.titlelink" -l 5       # 前 5 个链接，包含文本、href 等
+```
+</details>
+
+<details>
+<summary><b>按文本点击（SPA 友好）</b></summary>
+
+```bash
+bctl click "button" -t "Sign in"        # 点击包含 "Sign in" 文本的按钮
+bctl click "a" -t "Settings"            # 点击包含 "Settings" 文本的链接
+bctl click "div[role=button]" -t "Save" # 任意元素 + 文本过滤
 ```
 </details>
 

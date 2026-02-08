@@ -48,7 +48,10 @@ function connect() {
   ws.onclose = () => {
     console.log("[bctl] Disconnected from bridge server");
     ws = null;
-    scheduleReconnect();
+    // Try immediate reconnect via setTimeout (works while SW is alive).
+    // chrome.alarms has a ~30s minimum in production, so we use setTimeout
+    // for fast retries first, with alarms as a reliable backup.
+    immediateReconnect();
   };
 
   ws.onerror = (e) => {
@@ -57,13 +60,27 @@ function connect() {
   };
 }
 
-function scheduleReconnect() {
-  // Use chrome.alarms for reliable reconnection in MV3 service workers.
-  // setTimeout/setInterval are unreliable because the service worker can be
-  // terminated at any time, losing all JS timers.
-  const delaySec = Math.max(1, reconnectDelay / 1000);
+let _reconnectTimer = null;
+
+function immediateReconnect() {
+  // Fast reconnect via setTimeout — works as long as the service worker is alive.
+  // We attempt rapid retries (1s, 2s, 4s…) which is much faster than chrome.alarms
+  // (minimum ~30s in production). If the SW is terminated mid-retry, the alarm
+  // backup in scheduleReconnect() will still fire.
+  const delay = reconnectDelay;
   reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
-  chrome.alarms.create("bctl-reconnect", { delayInMinutes: delaySec / 60 });
+
+  clearTimeout(_reconnectTimer);
+  _reconnectTimer = setTimeout(() => {
+    connect();
+  }, delay);
+
+  // Also schedule an alarm as a reliable backup in case the SW is killed.
+  chrome.alarms.create("bctl-reconnect", { delayInMinutes: Math.max(delay / 1000, 1) / 60 });
+}
+
+function scheduleReconnect() {
+  immediateReconnect();
 }
 
 // Handle alarm-based reconnection
@@ -86,9 +103,19 @@ connect();
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 
-// Keep-alive: periodic alarm every 25s to detect disconnection and reconnect.
-// Unlike setInterval, chrome.alarms persist across service worker restarts.
-chrome.alarms.create("bctl-keepalive", { periodInMinutes: 25 / 60 });
+// Keep-alive: periodic alarm as a fallback to detect disconnection.
+// chrome.alarms has a ~30s minimum in production, so we also use a faster
+// setTimeout-based keepalive that runs while the service worker is alive.
+chrome.alarms.create("bctl-keepalive", { periodInMinutes: 0.5 });
+
+// Fast keepalive via setTimeout — checks every 5s while SW is alive.
+function fastKeepalive() {
+  if (!ws || ws.readyState > WebSocket.OPEN) {
+    connect();
+  }
+  setTimeout(fastKeepalive, 5000);
+}
+setTimeout(fastKeepalive, 5000);
 
 // ---------------------------------------------------------------------------
 // Command dispatch
@@ -638,49 +665,67 @@ async function runInPage(op, params) {
  */
 function contentScriptHandler(op, params) {
   try {
-    function qs(selector, index) {
+    function qs(selector, index, textFilter) {
       if (!selector) return document.body;
-      if (index !== undefined && index !== null) {
-        const els = document.querySelectorAll(selector);
-        if (els.length === 0) throw new Error(`Element not found: ${selector}`);
-        if (index < 0) index = els.length + index; // negative index from end
-        if (index >= els.length) throw new Error(`Index ${index} out of range (found ${els.length} elements for: ${selector})`);
-        return els[index];
+      let candidates = Array.from(document.querySelectorAll(selector));
+      if (candidates.length === 0) throw new Error(`Element not found: ${selector}`);
+
+      // Filter by visible text content (substring match, case-insensitive)
+      if (textFilter) {
+        const lower = textFilter.toLowerCase();
+        candidates = candidates.filter(el => {
+          const t = (el.innerText || el.textContent || "").toLowerCase();
+          return t.includes(lower);
+        });
+        if (candidates.length === 0) throw new Error(`No element matching "${selector}" contains text "${textFilter}"`);
       }
-      const el = document.querySelector(selector);
-      if (!el) throw new Error(`Element not found: ${selector}`);
-      return el;
+
+      if (index !== undefined && index !== null) {
+        if (index < 0) index = candidates.length + index;
+        if (index >= candidates.length) throw new Error(`Index ${index} out of range (found ${candidates.length} elements for: ${selector})`);
+        return candidates[index];
+      }
+      return candidates[0];
     }
 
     switch (op) {
       case "click": {
-        const el = qs(params.selector, params.index);
+        const el = qs(params.selector, params.index, params.text);
         el.scrollIntoView({ block: "center", behavior: "instant" });
         el.click();
         const total = params.selector ? document.querySelectorAll(params.selector).length : 1;
-        return { data: { clicked: params.selector || "body", index: params.index ?? 0, total } };
+        return { data: { clicked: params.selector || "body", index: params.index ?? 0, total, text: params.text || null } };
       }
 
       case "hover": {
-        const el = qs(params.selector, params.index);
+        const el = qs(params.selector, params.index, params.text);
         el.scrollIntoView({ block: "center", behavior: "instant" });
         el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true }));
         el.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false, cancelable: true }));
         el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true }));
-        return { data: { hovered: params.selector } };
+        return { data: { hovered: params.selector, text: params.text || null } };
       }
 
       case "type": {
         const el = qs(params.selector);
         el.focus();
-        // Clear existing value
-        if ("value" in el) {
-          el.value = "";
-        }
-        // Simulate typing
         const text = params.text || "";
         if ("value" in el) {
-          el.value = text;
+          // Use the native HTMLInputElement/HTMLTextAreaElement value setter
+          // to bypass React's synthetic property override. React intercepts
+          // the 'value' property via Object.defineProperty; calling the
+          // original prototype setter ensures React sees the change.
+          const proto = el instanceof HTMLTextAreaElement
+            ? HTMLTextAreaElement.prototype
+            : HTMLInputElement.prototype;
+          const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+          if (nativeSetter) {
+            nativeSetter.call(el, "");
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            nativeSetter.call(el, text);
+          } else {
+            el.value = text;
+          }
           el.dispatchEvent(new Event("input", { bubbles: true }));
           el.dispatchEvent(new Event("change", { bubbles: true }));
         } else {
