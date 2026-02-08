@@ -1,6 +1,21 @@
-# browser-ctl
+<p align="right">
+  <strong>English</strong> | <a href="README_CN.md">中文</a>
+</p>
 
-**Control Chrome from your terminal.** A lightweight CLI tool for browser automation — navigate, click, type, scroll, screenshot, and more, all through simple commands.
+<h1 align="center">browser-ctl</h1>
+
+<p align="center">
+  <strong>Control Chrome from your terminal.</strong><br>
+  A lightweight CLI for browser automation — navigate, click, type, scroll, screenshot, and more.
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/browser-ctl/"><img alt="PyPI" src="https://img.shields.io/pypi/v/browser-ctl?color=blue"></a>
+  <a href="https://pypi.org/project/browser-ctl/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/browser-ctl"></a>
+  <a href="https://github.com/mikuh/browser-ctl/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/mikuh/browser-ctl"></a>
+</p>
+
+<br>
 
 ```bash
 pip install browser-ctl
@@ -12,13 +27,19 @@ bctl press Enter
 bctl screenshot results.png
 ```
 
-## Why browser-ctl?
+<br>
 
-- **Zero-config CLI** — single `bctl` command, JSON output, works in any shell or script
-- **No browser binary management** — uses your existing Chrome with a lightweight extension
-- **Stdlib-only CLI** — the CLI itself has zero external Python dependencies
-- **AI-agent friendly** — ships with an AI coding skill file (`SKILL.md`) for Cursor / OpenCode integration
-- **Local & private** — all communication stays on `localhost`, no data leaves your machine
+## Highlights
+
+| | Feature | |
+|---|---|---|
+| **Zero-config** | Single `bctl` command, JSON output, works in any shell or script | No setup headaches |
+| **No browser binary** | Uses your existing Chrome with a lightweight extension | No Puppeteer/Playwright install |
+| **Stdlib-only CLI** | The CLI has zero external Python dependencies | Minimal footprint |
+| **AI-agent friendly** | Ships with `SKILL.md` for Cursor / OpenCode integration | Built for LLM workflows |
+| **Local & private** | All communication on `localhost`, nothing leaves your machine | Privacy by design |
+
+<br>
 
 ## How It Works
 
@@ -26,124 +47,127 @@ bctl screenshot results.png
 Terminal (bctl)  ──HTTP──▶  Bridge Server  ◀──WebSocket──  Chrome Extension
 ```
 
-1. The **CLI** (`bctl`) sends commands via HTTP to a local bridge server
-2. The **bridge server** relays them over WebSocket to the Chrome extension
-3. The **extension** executes commands using Chrome APIs and content scripts
+1. **CLI** (`bctl`) sends commands via HTTP to a local bridge server
+2. **Bridge server** relays them over WebSocket to the Chrome extension
+3. **Extension** executes commands using Chrome APIs & content scripts
 4. Results flow back the same path as JSON
 
-The bridge server auto-starts on first command — no manual setup needed.
+> The bridge server auto-starts on first command — no manual setup needed.
+
+<br>
 
 ## Installation
 
-### 1. Install the Python package
+**Step 1** — Install the Python package:
 
 ```bash
 pip install browser-ctl
 ```
 
-### 2. Load the Chrome extension
+**Step 2** — Load the Chrome extension:
 
 ```bash
 bctl setup
 ```
 
-This copies the extension to `~/.browser-ctl/extension/` and opens Chrome's extension page. Then:
+Then in Chrome: `chrome://extensions` → Enable **Developer mode** → **Load unpacked** → select `~/.browser-ctl/extension/`
 
-1. Open `chrome://extensions`
-2. Enable **Developer mode** (top right)
-3. Click **Load unpacked**
-4. Select the `~/.browser-ctl/extension/` directory
-
-### 3. Verify
+**Step 3** — Verify:
 
 ```bash
 bctl ping
+# {"success": true, "data": {"server": true, "extension": true}}
 ```
 
-You should see `{"success": true, "data": {"server": true, "extension": true}}`.
+<br>
 
-## Commands
+## Command Reference
 
 ### Navigation
 
-```bash
-bctl navigate <url>       # Navigate to URL (aliases: nav, go)
-bctl back                 # Go back in history
-bctl forward              # Go forward (alias: fwd)
-bctl reload               # Reload current page
-```
+| Command | Description |
+|---------|-------------|
+| `bctl navigate <url>` | Navigate to URL &nbsp; *(aliases: `nav`, `go`)* |
+| `bctl back` | Go back in history |
+| `bctl forward` | Go forward &nbsp; *(alias: `fwd`)* |
+| `bctl reload` | Reload current page |
 
 ### Interaction
 
-```bash
-bctl click <sel> [-i N]           # Click element (CSS selector, optional Nth match)
-bctl hover <sel> [-i N]           # Hover over element
-bctl type <sel> <text>            # Type text into input/textarea
-bctl press <key>                  # Press key (Enter, Escape, Tab, etc.)
-bctl scroll <dir|sel> [pixels]    # Scroll: up/down/top/bottom or element into view
-bctl select-option <sel> <val>    # Select dropdown option (alias: sopt) [--text]
-bctl drag <src> [target]          # Drag to element or offset [--dx N --dy N]
-```
+| Command | Description |
+|---------|-------------|
+| `bctl click <sel> [-i N]` | Click element (CSS selector, optional Nth match) |
+| `bctl hover <sel> [-i N]` | Hover over element |
+| `bctl type <sel> <text>` | Type text into input/textarea |
+| `bctl press <key>` | Press key (Enter, Escape, Tab, etc.) |
+| `bctl scroll <dir\|sel> [px]` | Scroll: `up` / `down` / `top` / `bottom` or element into view |
+| `bctl select-option <sel> <val>` | Select dropdown option &nbsp; *(alias: `sopt`)* `[--text]` |
+| `bctl drag <src> [target]` | Drag to element or offset `[--dx N --dy N]` |
 
 ### DOM Query
 
-```bash
-bctl text [sel]           # Get text content (default: body)
-bctl html [sel]           # Get innerHTML
-bctl attr <sel> [name]    # Get attribute(s) [-i N for Nth element]
-bctl select <sel> [-l N]  # List matching elements (alias: sel, limit default: 20)
-bctl count <sel>          # Count matching elements
-bctl status               # Current page URL and title
-```
+| Command | Description |
+|---------|-------------|
+| `bctl text [sel]` | Get text content (default: `body`) |
+| `bctl html [sel]` | Get innerHTML |
+| `bctl attr <sel> [name] [-i N]` | Get attribute(s) of element |
+| `bctl select <sel> [-l N]` | List matching elements &nbsp; *(alias: `sel`)* |
+| `bctl count <sel>` | Count matching elements |
+| `bctl status` | Current page URL and title |
 
 ### JavaScript
 
-```bash
-bctl eval <code>          # Execute JS in page context (auto-bypasses CSP)
-```
+| Command | Description |
+|---------|-------------|
+| `bctl eval <code>` | Execute JS in page context (auto-bypasses CSP) |
 
 ### Tabs
 
-```bash
-bctl tabs                 # List all tabs
-bctl tab <id>             # Switch to tab by ID
-bctl new-tab [url]        # Open new tab
-bctl close-tab [id]       # Close tab (default: active)
-```
+| Command | Description |
+|---------|-------------|
+| `bctl tabs` | List all tabs |
+| `bctl tab <id>` | Switch to tab by ID |
+| `bctl new-tab [url]` | Open new tab |
+| `bctl close-tab [id]` | Close tab (default: active) |
 
 ### Screenshot & Files
 
-```bash
-bctl screenshot [path]    # Capture screenshot (alias: ss)
-bctl download <target>    # Download file/image (alias: dl) [-o file] [-i N]
-bctl upload <sel> <files> # Upload file(s) to <input type="file">
-```
+| Command | Description |
+|---------|-------------|
+| `bctl screenshot [path]` | Capture screenshot &nbsp; *(alias: `ss`)* |
+| `bctl download <target> [-o file] [-i N]` | Download file/image &nbsp; *(alias: `dl`)* |
+| `bctl upload <sel> <files...>` | Upload file(s) to `<input type="file">` |
 
 ### Wait & Dialog
 
-```bash
-bctl wait <sel|seconds>   # Wait for element or sleep [timeout]
-bctl dialog [accept|dismiss] [--text <val>]  # Handle next alert/confirm/prompt
-```
+| Command | Description |
+|---------|-------------|
+| `bctl wait <sel\|seconds> [timeout]` | Wait for element or sleep |
+| `bctl dialog [accept\|dismiss] [--text val]` | Handle next alert / confirm / prompt |
 
 ### Server
 
-```bash
-bctl ping                 # Check server & extension status
-bctl serve                # Start server in foreground
-bctl stop                 # Stop server
-```
+| Command | Description |
+|---------|-------------|
+| `bctl ping` | Check server & extension status |
+| `bctl serve` | Start server in foreground |
+| `bctl stop` | Stop server |
+
+<br>
 
 ## Examples
 
-### Search and extract
+<details>
+<summary><b>Search and extract</b></summary>
 
 ```bash
 bctl go "https://news.ycombinator.com"
 bctl select "a.titlelink" -l 5       # Top 5 links with text, href, etc.
 ```
+</details>
 
-### Fill a form
+<details>
+<summary><b>Fill a form</b></summary>
 
 ```bash
 bctl type "input[name=email]" "user@example.com"
@@ -152,30 +176,38 @@ bctl select-option "select#country" "US"
 bctl upload "input[type=file]" ./resume.pdf
 bctl click "button[type=submit]"
 ```
+</details>
 
-### Scroll and screenshot
+<details>
+<summary><b>Scroll and screenshot</b></summary>
 
 ```bash
 bctl go "https://en.wikipedia.org/wiki/Web_browser"
 bctl scroll down 1000
 bctl ss page.png
 ```
+</details>
 
-### Handle dialogs
+<details>
+<summary><b>Handle dialogs</b></summary>
 
 ```bash
 bctl dialog accept              # Set up handler BEFORE triggering
 bctl click "#delete-button"     # This triggers a confirm() dialog
 ```
+</details>
 
-### Drag and drop
+<details>
+<summary><b>Drag and drop</b></summary>
 
 ```bash
 bctl drag ".task-card" ".done-column"
 bctl drag ".range-slider" --dx 50 --dy 0
 ```
+</details>
 
-### Use in shell scripts
+<details>
+<summary><b>Shell scripting</b></summary>
 
 ```bash
 # Extract all image URLs from a page
@@ -187,24 +219,29 @@ bctl go "https://app.example.com/dashboard"
 bctl wait ".dashboard-loaded" 15
 bctl text ".metric-value"
 ```
+</details>
+
+<br>
 
 ## AI Agent Integration
 
-browser-ctl ships with a `SKILL.md` file designed for AI coding assistants. Install it for your tool:
+browser-ctl ships with a `SKILL.md` designed for AI coding assistants:
 
 ```bash
-bctl setup cursor       # Install skill for Cursor IDE
-bctl setup opencode     # Install skill for OpenCode
-bctl setup /path/to/dir # Install to custom directory
+bctl setup cursor       # Cursor IDE
+bctl setup opencode     # OpenCode
+bctl setup /path/to/dir # Custom directory
 ```
 
 Once installed, AI agents can use `bctl` commands to automate browser tasks on your behalf.
+
+<br>
 
 ## Output Format
 
 All commands return JSON to stdout:
 
-```json
+```jsonc
 // Success
 {"success": true, "data": {"url": "https://example.com", "title": "Example"}}
 
@@ -214,36 +251,42 @@ All commands return JSON to stdout:
 
 Non-zero exit code on errors — works naturally with `set -e` and `&&` chains.
 
+<br>
+
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Terminal                                       │
-│  $ bctl click "button.submit"                   │
-│       │                                         │
-│       ▼ HTTP POST localhost:19876/command        │
-│  ┌─────────────────────┐                        │
-│  │   Bridge Server     │ (Python, aiohttp)      │
-│  │   :19876            │                        │
-│  └────────┬────────────┘                        │
-│           │ WebSocket                           │
-│           ▼                                     │
-│  ┌─────────────────────┐                        │
-│  │  Chrome Extension   │ (Manifest V3)          │
-│  │  Service Worker     │                        │
-│  └────────┬────────────┘                        │
-│           │ chrome.scripting / chrome.debugger   │
-│           ▼                                     │
-│  ┌─────────────────────┐                        │
-│  │  Web Page           │                        │
-│  └─────────────────────┘                        │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  Terminal                                           │
+│  $ bctl click "button.submit"                       │
+│       │                                             │
+│       ▼  HTTP POST localhost:19876/command           │
+│  ┌──────────────────────┐                           │
+│  │   Bridge Server      │  (Python, aiohttp)        │
+│  │   :19876             │                           │
+│  └──────────┬───────────┘                           │
+│             │  WebSocket                            │
+│             ▼                                       │
+│  ┌──────────────────────┐                           │
+│  │  Chrome Extension    │  (Manifest V3)            │
+│  │  Service Worker      │                           │
+│  └──────────┬───────────┘                           │
+│             │  chrome.scripting / chrome.debugger    │
+│             ▼                                       │
+│  ┌──────────────────────┐                           │
+│  │  Web Page            │                           │
+│  └──────────────────────┘                           │
+└─────────────────────────────────────────────────────┘
 ```
 
-- **CLI** → stdlib only, communicates via HTTP
-- **Bridge Server** → async relay (aiohttp), auto-daemonizes
-- **Extension** → MV3 service worker, auto-reconnects via `chrome.alarms`
-- **Eval** → dual strategy: MAIN-world injection (fast) with CDP fallback (CSP-safe)
+| Component | Details |
+|-----------|---------|
+| **CLI** | Stdlib only, communicates via HTTP |
+| **Bridge Server** | Async relay (aiohttp), auto-daemonizes |
+| **Extension** | MV3 service worker, auto-reconnects via `chrome.alarms` |
+| **Eval** | Dual strategy: MAIN-world injection (fast) + CDP fallback (CSP-safe) |
+
+<br>
 
 ## Requirements
 
@@ -253,7 +296,7 @@ Non-zero exit code on errors — works naturally with `set -e` and `&&` chains.
 
 ## Privacy
 
-All communication is local (`127.0.0.1`). No analytics, no telemetry, no external servers. See [PRIVACY.md](PRIVACY.md) for the full privacy policy.
+All communication is local (`127.0.0.1`). No analytics, no telemetry, no external servers. See [PRIVACY.md](PRIVACY.md).
 
 ## License
 
