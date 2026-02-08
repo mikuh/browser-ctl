@@ -720,18 +720,51 @@ async function doBatch(params) {
  * It CANNOT reference any variables from the outer scope.
  */
 async function contentScriptHandler(commands) {
+  // -- Deep query helpers for Shadow DOM support --
+  // Recursively search through open shadow roots to find elements.
+
+  function deepQueryOne(root, selector) {
+    const found = root.querySelector(selector);
+    if (found) return found;
+    const els = root.querySelectorAll('*');
+    for (let i = 0; i < els.length; i++) {
+      if (els[i].shadowRoot) {
+        const found = deepQueryOne(els[i].shadowRoot, selector);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  function deepQueryAll(root, selector) {
+    const results = Array.from(root.querySelectorAll(selector));
+    const els = root.querySelectorAll('*');
+    for (let i = 0; i < els.length; i++) {
+      if (els[i].shadowRoot) {
+        results.push(...deepQueryAll(els[i].shadowRoot, selector));
+      }
+    }
+    return results;
+  }
+
   // -- Helper: query element by ref (e0, e1, …) or CSS selector with optional text filter --
   function qs(selector, index, textFilter) {
     if (!selector) return document.body;
 
     // Element ref support: "e0", "e1", "e2", … from snapshot
+    // Refs may live inside shadow DOM, so use deep query.
     if (/^e\d+$/.test(selector)) {
-      const el = document.querySelector(`[data-bctl-ref="${selector}"]`);
+      const el = deepQueryOne(document, `[data-bctl-ref="${selector}"]`);
       if (!el) throw new Error(`Ref not found: ${selector} (run 'snapshot' first to assign refs)`);
       return el;
     }
 
+    // Fast path: light DOM query
     let candidates = Array.from(document.querySelectorAll(selector));
+    // Fallback: search through open shadow roots
+    if (candidates.length === 0) {
+      candidates = deepQueryAll(document, selector);
+    }
     if (candidates.length === 0) throw new Error(`Element not found: ${selector}`);
 
     if (textFilter) {
@@ -799,7 +832,12 @@ async function contentScriptHandler(commands) {
 
       case "press": {
         const key = params.key;
-        const target = document.activeElement || document.body;
+        // Traverse into shadow DOM to find the actual focused element.
+        // document.activeElement returns the shadow host, not the inner element.
+        let target = document.activeElement || document.body;
+        while (target.shadowRoot && target.shadowRoot.activeElement) {
+          target = target.shadowRoot.activeElement;
+        }
         const opts = { key, bubbles: true, cancelable: true };
         const cancelled = !target.dispatchEvent(new KeyboardEvent("keydown", opts));
         target.dispatchEvent(new KeyboardEvent("keypress", opts));
@@ -844,7 +882,7 @@ async function contentScriptHandler(commands) {
       case "select": {
         const selector = params.selector;
         if (!selector) throw new Error("Missing 'selector' parameter");
-        const els = document.querySelectorAll(selector);
+        const els = deepQueryAll(document, selector);
         const limit = params.limit || 20;
         const items = [];
         for (let i = 0; i < Math.min(els.length, limit); i++) {
@@ -866,7 +904,7 @@ async function contentScriptHandler(commands) {
       case "count": {
         const selector = params.selector;
         if (!selector) throw new Error("Missing 'selector' parameter");
-        return { selector, count: document.querySelectorAll(selector).length };
+        return { selector, count: deepQueryAll(document, selector).length };
       }
 
       case "extractUrl": {
@@ -1026,8 +1064,14 @@ async function contentScriptHandler(commands) {
 
       // -- Snapshot: list interactive elements with refs --
       case "snapshot": {
-        // Clear previous refs
-        document.querySelectorAll("[data-bctl-ref]").forEach((el) => el.removeAttribute("data-bctl-ref"));
+        // Clear previous refs (including inside open shadow DOMs)
+        function clearRefs(root) {
+          root.querySelectorAll("[data-bctl-ref]").forEach((el) => el.removeAttribute("data-bctl-ref"));
+          root.querySelectorAll('*').forEach((el) => {
+            if (el.shadowRoot) clearRefs(el.shadowRoot);
+          });
+        }
+        clearRefs(document);
 
         const onlyInteractive = params.interactive !== false;
         let refIndex = 0;
@@ -1054,10 +1098,15 @@ async function contentScriptHandler(commands) {
         function isVisible(el) {
           // body/html are always considered visible (root containers)
           if (el === document.body || el === document.documentElement) return true;
-          // Skip hidden elements quickly — offsetParent is null for
-          // display:none, detached elements, and <body>/<html> (handled above).
-          if (!el.offsetParent && getComputedStyle(el).position !== "fixed" && getComputedStyle(el).position !== "sticky") return false;
+          // Cache getComputedStyle — it's expensive and was called twice for fixed/sticky elements.
           const style = getComputedStyle(el);
+          // Skip hidden elements quickly — offsetParent is null for display:none,
+          // detached elements, and <body>/<html> (handled above).
+          // Also allow display:contents — these elements don't generate a box
+          // (so offsetParent is null, width/height are 0), but their children
+          // ARE rendered normally. Common in web component wrappers.
+          if (style.display === "contents") return true;
+          if (!el.offsetParent && style.position !== "fixed" && style.position !== "sticky") return false;
           if (style.display === "none" || style.visibility === "hidden") return false;
           if (parseFloat(style.opacity) === 0) return false;
           const rect = el.getBoundingClientRect();
@@ -1105,6 +1154,12 @@ async function contentScriptHandler(commands) {
 
           for (const child of el.children) {
             walk(child);
+          }
+          // Traverse into open shadow DOMs
+          if (el.shadowRoot) {
+            for (const child of el.shadowRoot.children) {
+              walk(child);
+            }
           }
         }
 
@@ -1170,7 +1225,7 @@ async function contentScriptHandler(commands) {
           const start = Date.now();
           let found = false;
           while (Date.now() - start < timeout) {
-            if (document.querySelector(params.selector)) {
+            if (deepQueryOne(document, params.selector)) {
               found = true;
               break;
             }
