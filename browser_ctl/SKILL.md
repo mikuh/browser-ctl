@@ -22,7 +22,7 @@ Use browser-ctl when you need to:
 
 ### Navigation
 ```
-bctl navigate <url>       Navigate to URL (aliases: nav, go)
+bctl navigate <url>       Navigate to URL (aliases: nav, go; auto-prepends https://)
 bctl back                 Go back
 bctl forward              Go forward (alias: fwd)
 bctl reload               Reload page
@@ -33,7 +33,7 @@ bctl reload               Reload page
 bctl click <sel> [-i N]   Click element (CSS selector, optional index)
 bctl hover <sel> [-i N]   Hover over element
 bctl type <sel> <text>    Type text into element
-bctl press <key>          Press key (Enter, Escape, Tab, etc.)
+bctl press <key>          Press key — Enter submits forms, Escape closes dialogs
 bctl scroll <dir|sel> [n] Scroll page: up/down/top/bottom or element into view
 bctl select-option <sel> <val> [--text]  Select <select> dropdown option (alias: sopt)
 bctl drag <src> [target]  Drag element to target [--dx N --dy N for offset]
@@ -65,7 +65,7 @@ bctl close-tab [id]       Close tab (default: active)
 ### Screenshot & Download
 ```
 bctl screenshot [path]    Capture screenshot (alias: ss)
-bctl download <target>    Download file/image (alias: dl) [-o file] [-i N]
+bctl download <target>    Download file/image (alias: dl) [-o path] [-i N]
 bctl upload <sel> <files> Upload file(s) to <input type="file">
 ```
 

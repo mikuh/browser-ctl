@@ -108,7 +108,7 @@ bctl ping
 
 | Command | Description |
 |---------|-------------|
-| `bctl navigate <url>` | Navigate to URL &nbsp; *(aliases: `nav`, `go`)* |
+| `bctl navigate <url>` | Navigate to URL &nbsp; *(aliases: `nav`, `go`; auto-prepends `https://`)* |
 | `bctl back` | Go back in history |
 | `bctl forward` | Go forward &nbsp; *(alias: `fwd`)* |
 | `bctl reload` | Reload current page |
@@ -120,7 +120,7 @@ bctl ping
 | `bctl click <sel> [-i N]` | Click element (CSS selector, optional Nth match) |
 | `bctl hover <sel> [-i N]` | Hover over element |
 | `bctl type <sel> <text>` | Type text into input/textarea |
-| `bctl press <key>` | Press key (Enter, Escape, Tab, etc.) |
+| `bctl press <key>` | Press key — Enter submits forms, Escape closes dialogs |
 | `bctl scroll <dir\|sel> [px]` | Scroll: `up` / `down` / `top` / `bottom` or element into view |
 | `bctl select-option <sel> <val>` | Select dropdown option &nbsp; *(alias: `sopt`)* `[--text]` |
 | `bctl drag <src> [target]` | Drag to element or offset `[--dx N --dy N]` |
@@ -156,7 +156,7 @@ bctl ping
 | Command | Description |
 |---------|-------------|
 | `bctl screenshot [path]` | Capture screenshot &nbsp; *(alias: `ss`)* |
-| `bctl download <target> [-o file] [-i N]` | Download file/image &nbsp; *(alias: `dl`)* |
+| `bctl download <target> [-o path] [-i N]` | Download file/image &nbsp; *(alias: `dl`; `-o` supports absolute paths)* |
 | `bctl upload <sel> <files...>` | Upload file(s) to `<input type="file">` |
 
 ### Wait & Dialog

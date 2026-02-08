@@ -693,9 +693,28 @@ function contentScriptHandler(op, params) {
         const key = params.key;
         const target = document.activeElement || document.body;
         const opts = { key, bubbles: true, cancelable: true };
-        target.dispatchEvent(new KeyboardEvent("keydown", opts));
+        const cancelled = !target.dispatchEvent(new KeyboardEvent("keydown", opts));
         target.dispatchEvent(new KeyboardEvent("keypress", opts));
         target.dispatchEvent(new KeyboardEvent("keyup", opts));
+        // Trigger browser-native default actions that synthetic events skip
+        if (!cancelled && key === "Enter") {
+          const form = target.closest && target.closest("form");
+          if (form) {
+            // requestSubmit() fires "submit" event and runs validation, unlike form.submit()
+            if (typeof form.requestSubmit === "function") {
+              form.requestSubmit();
+            } else {
+              form.submit();
+            }
+          } else if (target.tagName === "A" && target.href) {
+            target.click();
+          }
+        }
+        if (!cancelled && key === "Escape") {
+          // Close any open details/dialog element
+          const dialog = document.querySelector("dialog[open]");
+          if (dialog && typeof dialog.close === "function") dialog.close();
+        }
         return { data: { pressed: key } };
       }
 

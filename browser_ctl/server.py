@@ -120,6 +120,8 @@ async def command_handler(request: web.Request) -> web.Response:
 
 		# Wait for extension response
 		result = await asyncio.wait_for(future, timeout=COMMAND_TIMEOUT)
+		# Strip internal request ID before returning to CLI
+		result.pop("id", None)
 		return web.json_response(result)
 	except asyncio.TimeoutError:
 		return _json_error(f"Extension did not respond within {COMMAND_TIMEOUT}s")

@@ -108,7 +108,7 @@ bctl ping
 
 | 命令 | 说明 |
 |------|------|
-| `bctl navigate <url>` | 导航到 URL &nbsp; *（别名：`nav`、`go`）* |
+| `bctl navigate <url>` | 导航到 URL &nbsp; *（别名：`nav`、`go`；自动补全 `https://`）* |
 | `bctl back` | 后退 |
 | `bctl forward` | 前进 &nbsp; *（别名：`fwd`）* |
 | `bctl reload` | 重新加载页面 |
@@ -120,7 +120,7 @@ bctl ping
 | `bctl click <sel> [-i N]` | 点击元素（CSS 选择器，可选第 N 个匹配项） |
 | `bctl hover <sel> [-i N]` | 悬停在元素上 |
 | `bctl type <sel> <text>` | 在 input/textarea 中输入文本 |
-| `bctl press <key>` | 按下键盘键（Enter、Escape、Tab 等） |
+| `bctl press <key>` | 按下键盘键 — Enter 提交表单，Escape 关闭弹窗 |
 | `bctl scroll <方向\|sel> [像素]` | 滚动：`up` / `down` / `top` / `bottom` 或将元素滚动到视口 |
 | `bctl select-option <sel> <val>` | 选择下拉选项 &nbsp; *（别名：`sopt`）* `[--text]` |
 | `bctl drag <src> [target]` | 拖拽到元素或偏移位置 `[--dx N --dy N]` |
@@ -156,7 +156,7 @@ bctl ping
 | 命令 | 说明 |
 |------|------|
 | `bctl screenshot [path]` | 截图 &nbsp; *（别名：`ss`）* |
-| `bctl download <target> [-o file] [-i N]` | 下载文件/图片 &nbsp; *（别名：`dl`）* |
+| `bctl download <target> [-o path] [-i N]` | 下载文件/图片 &nbsp; *（别名：`dl`；`-o` 支持绝对路径）* |
 | `bctl upload <sel> <files...>` | 上传文件到 `<input type="file">` |
 
 ### 等待与弹窗

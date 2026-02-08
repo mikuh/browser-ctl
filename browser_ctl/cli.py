@@ -38,15 +38,23 @@ SKILL_TARGETS = {
 
 
 def is_server_running() -> bool:
-	"""Check if bridge server is running."""
+	"""Check if bridge server is running (PID exists AND HTTP health check passes)."""
 	if not os.path.exists(PID_FILE):
 		return False
 	try:
 		with open(PID_FILE) as f:
 			pid = int(f.read().strip())
-		os.kill(pid, 0)
-		return True
+		os.kill(pid, 0)  # Check process exists
 	except (OSError, ValueError):
+		return False
+	# Process exists — verify it is actually accepting HTTP connections.
+	# This avoids a race where the PID is still alive but the server is
+	# shutting down (port already closed).
+	try:
+		req = urllib.request.Request(f"{SERVER_URL}/health")
+		resp = urllib.request.urlopen(req, timeout=1)
+		return resp.status == 200
+	except Exception:
 		return False
 
 
@@ -79,8 +87,20 @@ def start_server() -> bool:
 
 
 def stop_server():
-	"""Stop bridge server."""
-	send_raw("shutdown", {})
+	"""Stop bridge server and print JSON result."""
+	if not is_server_running():
+		print(json.dumps({"success": True, "data": {"stopped": False, "message": "Server is not running"}}))
+		return
+	result = send_raw("shutdown", {})
+	if result.get("success"):
+		# Wait briefly for server to fully stop and clean up PID file
+		for _ in range(20):
+			time.sleep(0.05)
+			if not is_server_running():
+				break
+		print(json.dumps({"success": True, "data": {"stopped": True}}))
+	else:
+		print(json.dumps(result, ensure_ascii=False))
 
 
 def ensure_server():
@@ -276,6 +296,52 @@ def handle_screenshot(args):
 		print(json.dumps(result, ensure_ascii=False))
 
 
+def handle_download(args):
+	"""Download needs special handling for absolute output paths.
+
+	chrome.downloads API only accepts relative filenames (within the browser's
+	download directory).  When the user passes an absolute path via ``-o``,
+	we send only the basename to the extension and then move the downloaded
+	file to the requested location.
+	"""
+	ensure_server()
+
+	target = args.target
+	output = args.output
+	move_to = None
+
+	if target.startswith("http://") or target.startswith("https://"):
+		params: dict = {"url": target}
+	else:
+		params = {"selector": target, "index": args.index}
+
+	if output and os.path.isabs(output):
+		move_to = output
+		params["filename"] = os.path.basename(output)
+	else:
+		params["filename"] = output
+
+	result = send_raw("download", params)
+	if not result.get("success"):
+		print(json.dumps(result, ensure_ascii=False))
+		sys.exit(1)
+
+	# Move downloaded file to the requested absolute path
+	if move_to and result.get("data", {}).get("filename"):
+		src_path = result["data"]["filename"]
+		try:
+			shutil.move(src_path, move_to)
+			result["data"]["filename"] = move_to
+		except OSError as e:
+			result = {"success": False, "error": f"Download succeeded but failed to move to {move_to}: {e}"}
+			print(json.dumps(result, ensure_ascii=False))
+			sys.exit(1)
+
+	print(json.dumps(result, ensure_ascii=False))
+	if not result.get("success"):
+		sys.exit(1)
+
+
 def handle_serve(args):
 	"""Run server in foreground."""
 	os.execvp(sys.executable, [sys.executable, "-m", "browser_ctl.server", "--port", str(DEFAULT_PORT)])
@@ -434,10 +500,19 @@ def main():
 		handle_screenshot(args)
 		return
 
+	# Download (special handling for absolute output paths)
+	if cmd == "download":
+		handle_download(args)
+		return
+
 	# Map CLI args to command params
 	params = {}
 	if cmd == "navigate":
-		params = {"url": args.url}
+		url = args.url
+		# Auto-prepend https:// for bare domains
+		if not url.split(":", 1)[0].lower() in ("http", "https", "file", "about", "data", "chrome", "chrome-extension"):
+			url = "https://" + url
+		params = {"url": url}
 	elif cmd == "click":
 		params = {"selector": args.selector, "index": args.index}
 	elif cmd == "hover":
@@ -464,12 +539,6 @@ def main():
 		params = {"url": args.url}
 	elif cmd == "close-tab":
 		params = {"id": args.id}
-	elif cmd == "download":
-		target = args.target
-		if target.startswith("http://") or target.startswith("https://"):
-			params = {"url": target, "filename": args.output}
-		else:
-			params = {"selector": target, "filename": args.output, "index": args.index}
 	elif cmd == "scroll":
 		params = {"target": args.target, "amount": args.amount}
 	elif cmd == "select-option":
