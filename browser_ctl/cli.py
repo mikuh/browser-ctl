@@ -440,6 +440,28 @@ def _get_extension_source_dir() -> str | None:
 	return None
 
 
+def _get_package_version() -> str:
+	"""Get the package version. Tries pyproject.toml first (dev), then importlib.metadata (pip)."""
+	# 1. Read from pyproject.toml (always up-to-date in source checkouts)
+	try:
+		pkg_dir = os.path.dirname(os.path.abspath(__file__))
+		toml_path = os.path.join(os.path.dirname(pkg_dir), "pyproject.toml")
+		if os.path.exists(toml_path):
+			with open(toml_path) as f:
+				for line in f:
+					if line.strip().startswith("version"):
+						return line.split("=", 1)[1].strip().strip('"').strip("'")
+	except Exception:
+		pass
+	# 2. importlib.metadata (works for pip-installed packages)
+	try:
+		from importlib.metadata import version
+		return version("browser-ctl")
+	except Exception:
+		pass
+	return "0.0.0"
+
+
 def _install_extension() -> str | None:
 	"""Copy extension to ~/.browser-ctl/extension/ and try to open Chrome extensions page."""
 	src = _get_extension_source_dir()
@@ -450,6 +472,18 @@ def _install_extension() -> str | None:
 	if os.path.exists(dest):
 		shutil.rmtree(dest)
 	shutil.copytree(src, dest)
+
+	# Sync manifest.json version with the Python package version
+	manifest_path = os.path.join(dest, "manifest.json")
+	try:
+		with open(manifest_path, "r") as f:
+			manifest = json.load(f)
+		manifest["version"] = _get_package_version()
+		with open(manifest_path, "w") as f:
+			json.dump(manifest, f, indent=2)
+			f.write("\n")
+	except Exception:
+		pass  # Non-fatal: extension still works with mismatched version
 
 	# Try to open Chrome extensions page
 	system = platform.system()
