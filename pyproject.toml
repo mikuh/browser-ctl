@@ -1,6 +1,6 @@
 [project]
 name = "browser-ctl"
-version = "0.2.1"
+version = "0.2.2"
 description = "Control your browser from the command line via a Chrome extension + WebSocket bridge"
 readme = "README.md"
 license = "MIT"
@@ -42,4 +42,4 @@ build-backend = "setuptools.build_meta"
 include = ["browser_ctl*"]
 
 [tool.setuptools.package-data]
-browser_ctl = ["SKILL.md"]
+browser_ctl = ["SKILL.md", "extension/*"]

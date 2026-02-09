@@ -421,8 +421,18 @@ def handle_serve(args):
 
 
 def _get_extension_source_dir() -> str | None:
-	"""Locate the extension source directory (from project root)."""
+	"""Locate the extension source directory.
+
+	Looks in two places:
+	1. Inside the package (works for pip install)
+	2. Project root (works for editable/dev install)
+	"""
 	pkg_dir = os.path.dirname(os.path.abspath(__file__))
+	# 1. Bundled inside the package (pip install browser-ctl)
+	ext_dir = os.path.join(pkg_dir, "extension")
+	if os.path.isdir(ext_dir) and os.path.exists(os.path.join(ext_dir, "manifest.json")):
+		return ext_dir
+	# 2. Project root (pip install -e . / dev checkout)
 	project_root = os.path.dirname(pkg_dir)
 	ext_dir = os.path.join(project_root, "extension")
 	if os.path.isdir(ext_dir) and os.path.exists(os.path.join(ext_dir, "manifest.json")):
