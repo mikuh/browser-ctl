@@ -792,6 +792,17 @@ async function contentScriptHandler(commands) {
       case "click": {
         const el = qs(params.selector, params.index, params.text);
         el.scrollIntoView({ block: "center", behavior: "instant" });
+        // Dispatch full pointer/mouse sequence first for Vue/React SPA compatibility,
+        // then call native el.click() which produces a trusted (isTrusted:true) event
+        // that sites like GitHub require.
+        const rect = el.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const mOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
+        el.dispatchEvent(new PointerEvent("pointerdown", { ...mOpts, pointerId: 1 }));
+        el.dispatchEvent(new MouseEvent("mousedown", mOpts));
+        el.dispatchEvent(new PointerEvent("pointerup", { ...mOpts, pointerId: 1 }));
+        el.dispatchEvent(new MouseEvent("mouseup", mOpts));
         el.click();
         const total = params.selector ? document.querySelectorAll(params.selector).length : 1;
         return { clicked: params.selector || "body", index: params.index ?? 0, total, text: params.text || null };
