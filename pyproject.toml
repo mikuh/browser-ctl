@@ -1,6 +1,6 @@
 [project]
 name = "browser-ctl"
-version = "0.2.4"
+version = "0.2.5"
 description = "Control your browser from the command line via a Chrome extension + WebSocket bridge"
 readme = "README.md"
 license = "MIT"

@@ -1,3 +1,8 @@
+---
+name: browser-ctl
+description: CLI tool for browser automation. Control Chrome from the terminal via bctl commands. Navigate pages, click elements, type text, snapshot interactive elements, query DOM, take screenshots, download files, manage tabs, and execute JavaScript — all through a Chrome extension + WebSocket bridge returning JSON.
+---
+
 # browser-ctl
 
 CLI tool for browser automation. Control Chrome from the terminal via `bctl` commands.
