@@ -189,13 +189,15 @@ async def health_handler(request: web.Request) -> web.Response:
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Operations that run inside content scripts and can be batched.
-# Operations executed inside content scripts — can be batched into a single
+# Operations that run inside content scripts and can be batched into a single
 # chrome.scripting.executeScript call.  "eval" is excluded because it uses
 # MAIN-world script-tag injection + CDP debugger fallback.
 _CONTENT_SCRIPT_OPS = frozenset({
-	"click", "hover", "type", "press", "text", "html", "attr",
-	"select", "count", "scroll", "select-option", "drag", "wait",
+	"click", "dblclick", "hover", "focus", "type", "input-text",
+	"press", "check", "uncheck",
+	"text", "html", "attr", "select", "count", "snapshot",
+	"is-visible", "get-value",
+	"scroll", "select-option", "drag", "wait",
 })
 
 

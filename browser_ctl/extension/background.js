@@ -143,9 +143,9 @@ async function handleAction(action, params) {
     case "reload":
       return await doReload();
 
-    // -- Interaction (content-script) --
+    // -- Interaction --
     case "click":
-      return await runInPage("click", params);
+      return await doClick(params);
     case "hover":
       return await runInPage("hover", params);
     case "type":
@@ -436,6 +436,128 @@ function waitForDownload(downloadId, timeoutMs = 30000) {
     }
     chrome.downloads.onChanged.addListener(listener);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Click — Three-phase approach for maximum SPA compatibility:
+//   Phase 1 (ISOLATED): Find element, scrollIntoView, dispatch pointer/mouse events
+//   Phase 2 (MAIN): Hook window.open to capture blocked popup URLs, then dispatch
+//                   click event. The click triggers the site's normal handler which
+//                   may call window.open() — but since isTrusted=false, Chrome blocks
+//                   the popup. Our hook captures the URL instead.
+//   Phase 3 (background): If window.open was intercepted, navigate via chrome.tabs.
+// ---------------------------------------------------------------------------
+
+async function doClick(params) {
+  const tab = await activeTab();
+
+  // Phase 1: Find element + dispatch pointer/mouse events (ISOLATED world)
+  const phase1 = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: (selector, index, textFilter) => {
+      function qs(sel, idx, tf) {
+        if (sel && /^e\d+$/.test(sel)) {
+          const el = document.querySelector(`[data-bctl-ref="${sel}"]`);
+          if (!el) throw new Error(`Ref not found: ${sel}`);
+          return el;
+        }
+        if (!sel) return document.body;
+        let els = Array.from(document.querySelectorAll(sel));
+        if (tf) {
+          const lc = tf.toLowerCase();
+          els = els.filter((e) => e.textContent && e.textContent.toLowerCase().includes(lc));
+        }
+        if (!els.length) throw new Error(`Element not found: ${sel}${tf ? ` (text: "${tf}")` : ""}`);
+        const i = idx ?? 0;
+        const actual = i < 0 ? els.length + i : i;
+        if (actual < 0 || actual >= els.length)
+          throw new Error(`Index ${i} out of range (0..${els.length - 1}) for: ${sel}`);
+        return els[actual];
+      }
+      try {
+        const el = qs(selector, index, textFilter);
+        el.scrollIntoView({ block: "center", behavior: "instant" });
+        const rect = el.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const mOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
+        el.dispatchEvent(new PointerEvent("pointerdown", { ...mOpts, pointerId: 1 }));
+        el.dispatchEvent(new MouseEvent("mousedown", mOpts));
+        el.dispatchEvent(new PointerEvent("pointerup", { ...mOpts, pointerId: 1 }));
+        el.dispatchEvent(new MouseEvent("mouseup", mOpts));
+        el.setAttribute("data-bctl-click-target", "1");
+        const total = selector ? document.querySelectorAll(selector).length : 1;
+        return { success: true, cx, cy, total };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    },
+    args: [params.selector, params.index, params.text],
+  });
+
+  const info = phase1[0]?.result;
+  if (!info || !info.success) throw new Error(info?.error || "Failed to locate element");
+
+  // Phase 2a: Install window.open hook in MAIN world (persists across ticks)
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => {
+      window.__bctlOrigOpen = window.open;
+      window.__bctlCapturedUrl = null;
+      window.open = function (url) {
+        if (url && typeof url === "string" && url.startsWith("http")) {
+          window.__bctlCapturedUrl = url;
+        }
+        return null; // Block the popup — we'll navigate via chrome.tabs
+      };
+    },
+    world: "MAIN",
+  });
+
+  // Phase 2b: Dispatch click in MAIN world (site's async handler will call
+  // window.open on a later tick — our hook persists and captures it)
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: (cx, cy) => {
+      const el = document.querySelector("[data-bctl-click-target]");
+      if (el) {
+        el.removeAttribute("data-bctl-click-target");
+        const opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, view: window };
+        el.dispatchEvent(new MouseEvent("click", opts));
+      }
+    },
+    args: [info.cx, info.cy],
+    world: "MAIN",
+  });
+
+  // Phase 2c: Wait for async handlers, then read captured URL and restore
+  await new Promise((r) => setTimeout(r, 200));
+
+  const phase2c = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: () => {
+      const url = window.__bctlCapturedUrl;
+      window.open = window.__bctlOrigOpen;
+      delete window.__bctlCapturedUrl;
+      delete window.__bctlOrigOpen;
+      return { capturedUrl: url };
+    },
+    world: "MAIN",
+  });
+
+  const clickResult = phase2c[0]?.result;
+
+  // Phase 3: If window.open was intercepted, navigate via chrome.tabs
+  if (clickResult?.capturedUrl) {
+    await chrome.tabs.create({ url: clickResult.capturedUrl, active: true });
+  }
+
+  return {
+    clicked: params.selector || "body",
+    index: params.index ?? 0,
+    total: info.total,
+    text: params.text || null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -792,17 +914,20 @@ async function contentScriptHandler(commands) {
       case "click": {
         const el = qs(params.selector, params.index, params.text);
         el.scrollIntoView({ block: "center", behavior: "instant" });
-        // Dispatch full pointer/mouse sequence first for Vue/React SPA compatibility,
+        // Dispatch full pointer/mouse sequence for Vue/React SPA compatibility.
+        // We dispatch a MouseEvent("click") WITH coordinates first (for frameworks
+        // that use event delegation based on clientX/clientY, e.g. Tencent Video),
         // then call native el.click() which produces a trusted (isTrusted:true) event
-        // that sites like GitHub require.
+        // (for sites like GitHub that require trusted events).
         const rect = el.getBoundingClientRect();
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
-        const mOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
+        const mOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, view: window };
         el.dispatchEvent(new PointerEvent("pointerdown", { ...mOpts, pointerId: 1 }));
         el.dispatchEvent(new MouseEvent("mousedown", mOpts));
         el.dispatchEvent(new PointerEvent("pointerup", { ...mOpts, pointerId: 1 }));
         el.dispatchEvent(new MouseEvent("mouseup", mOpts));
+        el.dispatchEvent(new MouseEvent("click", mOpts));
         el.click();
         const total = params.selector ? document.querySelectorAll(params.selector).length : 1;
         return { clicked: params.selector || "body", index: params.index ?? 0, total, text: params.text || null };

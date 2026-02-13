@@ -42,6 +42,7 @@ Tools like [browser-use](https://github.com/browser-use/browser-use), [Playwrigh
 | **Complex SDK integration** — requires importing libraries and writing async code | browser-use, Stagehand | Pure CLI with JSON output — any LLM can call `bctl click "button"` |
 | **Heavy dependencies** — Playwright alone pulls ~50 MB of packages + browser binary | Playwright, Puppeteer | CLI is stdlib-only; server needs only `aiohttp` |
 | **Token-inefficient for LLMs** — verbose API calls waste context window tokens | SDK-based tools | Concise commands: `bctl text h1` vs pages of boilerplate |
+| **Broken clicks on SPAs** — programmatic clicks get blocked by popup blockers | Puppeteer, Playwright | Intercepts `window.open()` and navigates via `chrome.tabs` — SPA-compatible |
 
 <br>
 
@@ -192,6 +193,10 @@ All `<sel>` arguments accept CSS selectors **or** element refs from `snapshot` (
 | `bctl ping` | Check server & extension status |
 | `bctl serve` | Start server in foreground |
 | `bctl stop` | Stop server |
+| `bctl setup` | Install extension to `~/.browser-ctl/extension/` + open Chrome extensions page |
+| `bctl setup cursor` | Install AI skill (`SKILL.md`) into Cursor IDE |
+| `bctl setup opencode` | Install AI skill into OpenCode |
+| `bctl setup <path>` | Install AI skill to a custom directory |
 
 <br>
 
@@ -353,9 +358,10 @@ Non-zero exit code on errors — works naturally with `set -e` and `&&` chains.
 
 | Component | Details |
 |-----------|---------|
-| **CLI** | Stdlib only, communicates via HTTP |
+| **CLI** | Stdlib only, raw-socket HTTP (zero heavy imports, ~5ms cold start) |
 | **Bridge Server** | Async relay (aiohttp), auto-daemonizes |
 | **Extension** | MV3 service worker, auto-reconnects via `chrome.alarms` |
+| **Click** | Three-phase: pointer events → MAIN-world click → `window.open()` interception for SPA compatibility |
 | **Eval** | Dual strategy: MAIN-world injection (fast) + CDP fallback (CSP-safe) |
 
 <br>

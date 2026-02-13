@@ -42,6 +42,7 @@ bctl screenshot results.png
 | **复杂的 SDK 集成** — 需要导入库、编写异步代码 | browser-use、Stagehand | 纯 CLI + JSON 输出 — 任何 LLM 都能调用 `bctl click "button"` |
 | **依赖沉重** — 仅 Playwright 就需要约 50 MB 包 + 浏览器二进制文件 | Playwright、Puppeteer | CLI 零外部依赖；服务器仅需 `aiohttp` |
 | **对 LLM 不友好** — 冗长的 API 调用浪费上下文窗口 Token | SDK 类工具 | 简洁命令：`bctl text h1` vs 大量模板代码 |
+| **SPA 点击失效** — 程序化点击被弹窗拦截器阻止 | Puppeteer、Playwright | 拦截 `window.open()` 并通过 `chrome.tabs` 导航 — 完美兼容 SPA |
 
 <br>
 
@@ -192,6 +193,10 @@ bctl ping
 | `bctl ping` | 检查服务器和扩展状态 |
 | `bctl serve` | 前台启动服务器 |
 | `bctl stop` | 停止服务器 |
+| `bctl setup` | 安装扩展到 `~/.browser-ctl/extension/` 并打开 Chrome 扩展页面 |
+| `bctl setup cursor` | 为 Cursor IDE 安装 AI 技能（`SKILL.md`） |
+| `bctl setup opencode` | 为 OpenCode 安装 AI 技能 |
+| `bctl setup <path>` | 将 AI 技能安装到自定义目录 |
 
 <br>
 
@@ -353,9 +358,10 @@ bctl text ".metric-value"
 
 | 组件 | 说明 |
 |------|------|
-| **CLI** | 纯标准库，通过 HTTP 通信 |
+| **CLI** | 纯标准库，原始 socket HTTP（零重依赖导入，约 5ms 冷启动） |
 | **桥接服务器** | 异步中继（aiohttp），自动守护进程化 |
 | **扩展** | MV3 Service Worker，通过 `chrome.alarms` 自动重连 |
+| **Click** | 三阶段：指针事件 → MAIN world 点击 → `window.open()` 拦截，完美兼容 SPA |
 | **Eval** | 双策略：MAIN world 注入（快速）+ CDP 回退（绕过 CSP） |
 
 <br>

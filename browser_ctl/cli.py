@@ -8,24 +8,23 @@ via HTTP POST to localhost:19876/command.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
-import platform
 import shlex
-import shutil
-import subprocess
 import sys
 
-from browser_ctl.client import (
-	BCTL_HOME,
-	DEFAULT_PORT,
-	ensure_server,
-	send_batch,
-	send_command,
-	send_raw,
-	stop_server,
-)
+# Lazy-loaded — avoids importing urllib/subprocess on module load.
+# Populated on first use via _client().
+_client_mod = None
+
+
+def _client():
+	"""Lazy import of browser_ctl.client to avoid startup overhead."""
+	global _client_mod
+	if _client_mod is None:
+		from browser_ctl import client as _mod
+		_client_mod = _mod
+	return _client_mod
 
 SKILL_TARGETS = {
 	"cursor": os.path.join(os.path.expanduser("~"), ".cursor", "skills-cursor"),
@@ -68,7 +67,7 @@ CONTENT_SCRIPT_OPS = frozenset({
 
 def handle_pipe(args):
 	"""Read commands from stdin, execute them with smart batching, print JSONL."""
-	ensure_server()
+	_client().ensure_server_optimistic()
 	parser = build_parser()
 
 	# Collect all commands first
@@ -93,7 +92,7 @@ def handle_pipe(args):
 
 def handle_batch(args):
 	"""Execute multiple commands given as CLI arguments with smart batching."""
-	ensure_server()
+	_client().ensure_server_optimistic()
 	parser = build_parser()
 
 	pending: list[tuple[str, dict]] = []
@@ -130,7 +129,7 @@ def _execute_with_batching(commands: list[tuple[str, dict]], continue_on_error: 
 
 			if len(batch) == 1:
 				# Single command — use normal endpoint (no overhead)
-				result = send_raw(batch[0]["action"], batch[0]["params"])
+				result = _client().send_raw(batch[0]["action"], batch[0]["params"])
 				print(json.dumps(result, ensure_ascii=False), flush=True)
 				if not result.get("success"):
 					had_error = True
@@ -138,7 +137,7 @@ def _execute_with_batching(commands: list[tuple[str, dict]], continue_on_error: 
 						sys.exit(1)
 			else:
 				# Multiple consecutive content-script ops — use /batch
-				result = send_batch(batch)
+				result = _client().send_batch(batch)
 				if result.get("success") and "results" in result.get("data", {}):
 					for r in result["data"]["results"]:
 						print(json.dumps(r, ensure_ascii=False), flush=True)
@@ -154,7 +153,7 @@ def _execute_with_batching(commands: list[tuple[str, dict]], continue_on_error: 
 						sys.exit(1)
 		else:
 			# Non-batchable command — send individually
-			result = send_raw(action, params)
+			result = _client().send_raw(action, params)
 			print(json.dumps(result, ensure_ascii=False), flush=True)
 			if not result.get("success"):
 				had_error = True
@@ -352,14 +351,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def handle_screenshot(args):
 	"""Screenshot needs special handling for file save."""
-	ensure_server()
-	result = send_raw("screenshot", {})
+	_client().ensure_server_optimistic()
+	result = _client().send_raw("screenshot", {})
 	if not result.get("success"):
 		print(json.dumps(result, ensure_ascii=False))
 		sys.exit(1)
 
 	if args.path:
 		# Save to file
+		import base64
 		b64 = result["data"]["base64"]
 		img_bytes = base64.b64decode(b64)
 		with open(args.path, "wb") as f:
@@ -377,7 +377,7 @@ def handle_download(args):
 	we send only the basename to the extension and then move the downloaded
 	file to the requested location.
 	"""
-	ensure_server()
+	_client().ensure_server_optimistic()
 
 	target = args.target
 	output = args.output
@@ -394,13 +394,14 @@ def handle_download(args):
 	else:
 		params["filename"] = output
 
-	result = send_raw("download", params)
+	result = _client().send_raw("download", params)
 	if not result.get("success"):
 		print(json.dumps(result, ensure_ascii=False))
 		sys.exit(1)
 
 	# Move downloaded file to the requested absolute path
 	if move_to and result.get("data", {}).get("filename"):
+		import shutil
 		src_path = result["data"]["filename"]
 		try:
 			shutil.move(src_path, move_to)
@@ -417,6 +418,7 @@ def handle_download(args):
 
 def handle_serve(args):
 	"""Run server in foreground."""
+	from browser_ctl.client import DEFAULT_PORT
 	os.execvp(sys.executable, [sys.executable, "-m", "browser_ctl.server", "--port", str(DEFAULT_PORT)])
 
 
@@ -464,6 +466,11 @@ def _get_package_version() -> str:
 
 def _install_extension() -> str | None:
 	"""Copy extension to ~/.browser-ctl/extension/ and try to open Chrome extensions page."""
+	import platform
+	import shutil
+	import subprocess
+	from browser_ctl.client import BCTL_HOME
+
 	src = _get_extension_source_dir()
 	if not src:
 		return None
@@ -513,6 +520,8 @@ def _install_extension() -> str | None:
 
 def _install_skill(target_dir: str) -> str:
 	"""Copy SKILL.md into <target_dir>/browser-ctl/."""
+	import shutil
+
 	src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SKILL.md")
 	if not os.path.isfile(src):
 		raise FileNotFoundError("SKILL.md not found in browser_ctl package.")
@@ -687,7 +696,7 @@ def main():
 		handle_serve(args)
 		return
 	if cmd == "stop":
-		stop_server()
+		_client().stop_server()
 		return
 
 	# Screenshot (special handling)
@@ -712,7 +721,7 @@ def main():
 
 	# Standard command: parse args, send to server
 	action, params = args_to_action_params(cmd, args)
-	send_command(action, params)
+	_client().send_command(action, params)
 
 
 if __name__ == "__main__":
