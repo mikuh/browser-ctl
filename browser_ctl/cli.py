@@ -678,7 +678,25 @@ def args_to_action_params(cmd: str, args) -> tuple[str, dict]:
 # ---------------------------------------------------------------------------
 
 
+def _ensure_utf8_stdio():
+	"""Reconfigure stdout/stderr to UTF-8 on Windows.
+
+	Windows console defaults to the system code page (e.g. CP936 for Chinese
+	locales), which causes garbled output when printing non-ASCII characters
+	via ``json.dumps(ensure_ascii=False)``.  Calling ``reconfigure`` fixes
+	this for all subsequent ``print()`` calls.
+	"""
+	if sys.platform == "win32":
+		for stream in (sys.stdout, sys.stderr):
+			if hasattr(stream, "reconfigure"):
+				try:
+					stream.reconfigure(encoding="utf-8")
+				except Exception:
+					pass
+
+
 def main():
+	_ensure_utf8_stdio()
 	parser = build_parser()
 	args = parser.parse_args()
 
