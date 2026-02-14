@@ -739,6 +739,17 @@ def main():
 
 	# Standard command: parse args, send to server
 	action, params = args_to_action_params(cmd, args)
+
+	# Handle pure sleep locally — avoids extension round-trip which can
+	# timeout on heavy SPA pages (YouTube, etc.) where the service worker
+	# becomes unresponsive during page load.
+	if action == "wait" and "seconds" in params:
+		import time
+		seconds = params["seconds"]
+		time.sleep(seconds)
+		print(json.dumps({"success": True, "data": {"waited": seconds}}))
+		return
+
 	_client().send_command(action, params)
 
 

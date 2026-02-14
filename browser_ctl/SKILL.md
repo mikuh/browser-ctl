@@ -80,8 +80,8 @@ bctl eval <code>          Execute JS in page context (MAIN world)
 
 ### Tabs
 ```
-bctl tabs                 List all tabs (id, url, title, active)
-bctl tab <id>             Switch to tab
+bctl tabs                 List all tabs (id, url, title, active, windowId)
+bctl tab <id>             Switch to tab (also focuses the containing window)
 bctl new-tab [url]        Open new tab
 bctl close-tab [id]       Close tab (default: active)
 ```
@@ -166,6 +166,69 @@ bctl go "https://v.qq.com/x/cover/<cid>.html"
 - After navigation: `bctl wait 2-3` or `bctl wait "<selector>" 10`
 - After hover for overlay: `bctl wait 1`
 - AI generation: **poll** with `bctl wait 5 && bctl count "selector"` in a loop
+- Pure sleep (`bctl wait N`) runs locally in Python — no extension round-trip, so it
+  never times out even on heavy pages.
+
+### Heavy SPA Pages (YouTube, Gmail, etc.)
+Heavy SPA pages can cause the extension service worker to become unresponsive during
+page load. To avoid timeouts:
+- **Don't chain `bctl wait` with navigation via `&&`** — if the page is loading, the
+  wait command may timeout because the extension is busy. Instead, run them separately:
+  ```bash
+  bctl go "https://www.youtube.com"
+  bctl wait 3
+  bctl status
+  ```
+- **Use `bctl go` instead of `bctl new-tab`** when you just need to navigate — it's
+  more reliable because it reuses the current tab instead of creating a new one.
+- **If `new-tab` times out but the tab was created**, use `bctl tabs` to find it and
+  `bctl tab <id>` to switch to it.
+
+### Multi-Window Awareness
+`bctl tabs` returns tabs from ALL windows with `windowId` and `focusedWindowId`.
+`bctl tab <id>` automatically focuses the containing window before activating the tab,
+so cross-window tab switching works reliably.
+
+When working with multiple windows:
+- Check `windowId` in `bctl tabs` output to understand which window each tab belongs to
+- `bctl tab <id>` handles cross-window switching automatically
+- `bctl status` and `bctl snapshot` always operate on the active tab of the **focused** window
+
+### SPA Form Interactions (React, Vue, Angular, etc.)
+Modern SPA frameworks manage form state internally. **Never use `bctl eval` to set
+form values or click buttons** — it bypasses the framework's event system:
+
+```bash
+# BAD — bypasses React state, the dropdown/filter won't actually update:
+bctl eval "document.querySelector('input').value = 'hello'; ..."
+
+# GOOD — triggers real keyboard events that React/Vue can observe:
+bctl type "input" "hello"
+
+# BAD — JS .click() doesn't fire full pointer+mouse sequence, SPA may ignore it:
+bctl eval "document.querySelector('button').click()"
+
+# GOOD — dispatches real mousedown/mouseup/click events:
+bctl click "button" -t "Submit"
+```
+
+**`bctl type`** — sets value and fires focus/input/change events; works for most
+React/Vue inputs including search filters and form fields.
+
+**`bctl input-text`** — types character-by-character with real keydown/keypress/keyup
+events; use for rich text editors, autocomplete fields, or when `type` doesn't trigger
+the expected behavior. Add `--delay 50` if the app debounces input.
+
+**Complex dropdowns/pickers** (tag selectors, date pickers, combo boxes):
+1. `bctl click` to open the dropdown
+2. `bctl wait 1` for the dropdown to render
+3. `bctl type` into the filter/search input (NOT `bctl eval` with `value =`)
+4. `bctl wait 1` for results to filter
+5. `bctl click` on the target option (use `-t` for text matching)
+6. **Verify** the selection: `bctl snapshot` or `bctl text` to confirm state changed
+
+Always verify after complex interactions — if the state didn't change, retry with
+`bctl input-text --delay 50` instead of `bctl type`.
 
 ### Data Extraction
 Prefer `bctl select` over `bctl eval` — it's more reliable, works on all sites,
@@ -178,11 +241,15 @@ and returns text/href/id/class/aria-label automatically.
 3. **Use `download` for authenticated resources** — never `curl` from sites behind login.
 4. **Use `hover` before clicking overlay buttons** — many UIs hide actions until hover.
 5. **Check `tabs` after tab-opening actions** — popups may switch the active tab.
-6. **Chain commands** with `&&`: `bctl go "https://example.com" && bctl wait 2 && bctl status`
+6. **Don't chain `&&` with `bctl wait` after navigation** — run them as separate commands.
+7. **Prefer `bctl go` over `bctl new-tab`** for simple navigation — fewer failure modes.
+8. **Never use `eval` to set input values or click buttons on SPA sites** — use `type`/`input-text`/`click`.
+9. **Verify after complex UI interactions** — `snapshot` or `text` to confirm state changed.
 
 ## Known Limitations
 
 - `eval` blocked by Trusted Types on some sites (Gemini, YouTube) — use `attr`/`select` instead
+- `eval` with `input.value = ...` or `.click()` bypasses SPA framework state — use `type`/`click` instead
 - `screenshot` captures visible viewport only — scroll for full-page capture
 - Without `-i`, `click` always hits the FIRST match — use `count` to check first
 

@@ -316,22 +316,29 @@ async function doReload() {
 
 async function doTabs() {
   const tabs = await chrome.tabs.query({});
+  // Get focused window ID for multi-window awareness
+  const focusedWindow = await chrome.windows.getLastFocused();
   return {
     tabs: tabs.map((t) => ({
       id: t.id,
       url: t.url,
       title: t.title,
       active: t.active,
+      windowId: t.windowId,
     })),
+    focusedWindowId: focusedWindow.id,
   };
 }
 
 async function doSwitchTab(params) {
   const tabId = parseInt(params.id, 10);
   if (isNaN(tabId)) throw new Error("Missing or invalid 'id' parameter");
-  await chrome.tabs.update(tabId, { active: true });
   const tab = await chrome.tabs.get(tabId);
-  return { id: tab.id, url: tab.url, title: tab.title };
+  // Focus the window containing this tab first (critical for multi-window setups)
+  await chrome.windows.update(tab.windowId, { focused: true });
+  await chrome.tabs.update(tabId, { active: true });
+  const updated = await chrome.tabs.get(tabId);
+  return { id: updated.id, url: updated.url, title: updated.title, windowId: updated.windowId };
 }
 
 async function doNewTab(params) {
