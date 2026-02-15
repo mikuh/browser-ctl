@@ -99,7 +99,7 @@ Then in Chrome: `chrome://extensions` → Enable **Developer mode** → **Load u
 **Step 3** — Verify:
 
 ```bash
-bctl ping
+bctl ensure-ready
 # {"success": true, "data": {"server": true, "extension": true}}
 ```
 
@@ -190,7 +190,10 @@ All `<sel>` arguments accept CSS selectors **or** element refs from `snapshot` (
 
 | Command | Description |
 |---------|-------------|
+| `bctl ensure-ready` | Ensure server + extension are ready (auto-starts server, auto-launches Chrome if needed) |
 | `bctl ping` | Check server & extension status |
+| `bctl capabilities` | Show actions supported by the connected extension |
+| `bctl self-test` | Run generic end-to-end smoke tests for core skill actions |
 | `bctl serve` | Start server in foreground |
 | `bctl stop` | Stop server |
 | `bctl setup` | Install extension to `~/.browser-ctl/extension/` + open Chrome extensions page |

@@ -15,10 +15,19 @@ Control Chrome via CLI. All commands return JSON to stdout.
 ## Always Start With
 
 ```bash
+bctl ensure-ready
+```
+
+`ensure-ready` auto-starts the local bridge server and will try to launch Chrome
+if the extension is not connected yet.
+
+Fallback diagnostics:
+
+```bash
 bctl ping
 ```
 
-If extension is not connected, tell the user to check Chrome and the extension.
+If it still shows `"extension": false`, tell the user to check Chrome and the extension.
 
 ## Core Principle: Text-First Page Perception
 
@@ -58,6 +67,8 @@ bctl uncheck <sel> [-i N] [-t text]  Uncheck checkbox
 bctl scroll <dir|sel> [n]            Scroll: up/down/top/bottom/<selector> [pixels]
 bctl select-option <sel> <val> [--text]  Select dropdown option (alias: sopt)
 bctl drag <src> [target] [--dx N --dy N] Drag element to target or by offset
+bctl set-field <sel> <value> [--no-clear] [--text]            Generic field setter
+bctl submit-and-assert [sel] [--assert-selector CSS] [--assert-url EXP] [--mode ...] [--timeout s]
 ```
 
 ### Query
@@ -71,6 +82,8 @@ bctl count <sel>          Count matching elements
 bctl status               Current page URL and title
 bctl is-visible <sel>     Check if element is visible (returns rect)
 bctl get-value <sel>      Get form element value (input/select/textarea)
+bctl assert-url <exp> [--mode equals|includes|regex]          Assert current URL
+bctl assert-field-value <sel> <exp> [--mode ...] [--by-text]  Assert field value/text
 ```
 
 ### JavaScript
@@ -117,7 +130,10 @@ browser call, reducing overhead by ~90%.
 
 ### Server
 ```
+bctl ensure-ready         Ensure server + extension are ready (auto-launch Chrome)
 bctl ping                 Check server and extension status
+bctl capabilities         Show extension-supported actions
+bctl self-test            Run generic end-to-end smoke checks
 bctl serve                Start server (foreground)
 bctl stop                 Stop server
 ```
@@ -147,19 +163,13 @@ Use `-t` to filter by visible text — ideal for SPAs where class names are dyna
 bctl click "button" -t "Submit"   # click button containing "Submit"
 ```
 
-### SPA Video Sites (Tencent Video, Bilibili, etc.)
-`bctl click` intercepts `window.open()` calls from SPA frameworks and opens the
-target URL via `chrome.tabs.create`. Just click like a normal user:
+### Generic Submit + Assertion Flow
+Prefer assertions after every important state change:
 ```bash
-bctl go "https://v.qq.com" && bctl wait 2
-bctl type "input" "西游记" && bctl press Enter && bctl wait 3
-bctl click ".root.list-item .poster-view" -i 0   # opens video in new tab
-```
-
-Fallback — extract content ID and navigate directly:
-```bash
-bctl attr ".root.list-item [dt-eid='poster']" "dt-params" | grep -o 'cid=[^&]*'
-bctl go "https://v.qq.com/x/cover/<cid>.html"
+bctl click "button" -t "Open settings"
+bctl set-field "input[name='displayName']" "Alice"
+bctl submit-and-assert "button[type='submit']" --assert-selector ".toast-success" --timeout 8
+bctl assert-field-value "input[name='displayName']" "Alice"
 ```
 
 ### Waiting Strategy
@@ -169,13 +179,13 @@ bctl go "https://v.qq.com/x/cover/<cid>.html"
 - Pure sleep (`bctl wait N`) runs locally in Python — no extension round-trip, so it
   never times out even on heavy pages.
 
-### Heavy SPA Pages (YouTube, Gmail, etc.)
-Heavy SPA pages can cause the extension service worker to become unresponsive during
+### Heavy SPA Pages
+Heavy pages can cause the extension service worker to become unresponsive during
 page load. To avoid timeouts:
 - **Don't chain `bctl wait` with navigation via `&&`** — if the page is loading, the
   wait command may timeout because the extension is busy. Instead, run them separately:
   ```bash
-  bctl go "https://www.youtube.com"
+  bctl go "https://example.com"
   bctl wait 3
   bctl status
   ```
@@ -245,10 +255,22 @@ and returns text/href/id/class/aria-label automatically.
 7. **Prefer `bctl go` over `bctl new-tab`** for simple navigation — fewer failure modes.
 8. **Never use `eval` to set input values or click buttons on SPA sites** — use `type`/`input-text`/`click`.
 9. **Verify after complex UI interactions** — `snapshot` or `text` to confirm state changed.
+10. **Use assertion primitives** — `assert-url`, `assert-field-value`, `submit-and-assert`.
+
+## Universal Interaction Template
+
+Use this sequence on any site:
+
+1. `bctl ensure-ready`
+2. `bctl status` and `bctl snapshot`
+3. Prefer `eN` refs from snapshot when possible
+4. Execute (`click`/`set-field`/`type`)
+5. Assert (`assert-url` / `assert-field-value` / `count`)
+6. Retry only when error is retriable; otherwise refresh snapshot and re-select
 
 ## Known Limitations
 
-- `eval` blocked by Trusted Types on some sites (Gemini, YouTube) — use `attr`/`select` instead
+- `eval` may be blocked by Trusted Types/CSP on some pages — use `attr`/`select` instead
 - `eval` with `input.value = ...` or `.click()` bypasses SPA framework state — use `type`/`click` instead
 - `screenshot` captures visible viewport only — scroll for full-page capture
 - Without `-i`, `click` always hits the FIRST match — use `count` to check first

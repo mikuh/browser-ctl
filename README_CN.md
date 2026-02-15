@@ -99,7 +99,7 @@ bctl setup
 **第三步** — 验证：
 
 ```bash
-bctl ping
+bctl ensure-ready
 # {"success": true, "data": {"server": true, "extension": true}}
 ```
 
@@ -190,7 +190,10 @@ bctl ping
 
 | 命令 | 说明 |
 |------|------|
+| `bctl ensure-ready` | 确保服务器与扩展就绪（自动启动服务器，必要时自动拉起 Chrome） |
 | `bctl ping` | 检查服务器和扩展状态 |
+| `bctl capabilities` | 显示当前已连接扩展支持的动作列表 |
+| `bctl self-test` | 运行通用端到端冒烟测试，验证 skill 可用性 |
 | `bctl serve` | 前台启动服务器 |
 | `bctl stop` | 停止服务器 |
 | `bctl setup` | 安装扩展到 `~/.browser-ctl/extension/` 并打开 Chrome 扩展页面 |

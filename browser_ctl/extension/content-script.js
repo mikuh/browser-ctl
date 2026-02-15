@@ -51,6 +51,22 @@ async function contentScriptHandler(commands) {
   // Unified element query (Shadow DOM + text filter + ref support)
   // ===================================================================
 
+  function searchableText(el) {
+    const parts = [];
+    const visible = (el.innerText || el.textContent || "").trim();
+    if (visible) parts.push(visible);
+    const ariaLabel = (el.getAttribute && el.getAttribute("aria-label")) || "";
+    if (ariaLabel) parts.push(ariaLabel);
+    const title = (el.getAttribute && el.getAttribute("title")) || "";
+    if (title) parts.push(title);
+    const placeholder = (el.getAttribute && el.getAttribute("placeholder")) || "";
+    if (placeholder) parts.push(placeholder);
+    const alt = (el.getAttribute && el.getAttribute("alt")) || "";
+    if (alt) parts.push(alt);
+    if ("value" in el && typeof el.value === "string" && el.value) parts.push(el.value);
+    return parts.join(" ").toLowerCase();
+  }
+
   function qs(selector, index, textFilter) {
     if (!selector) return document.body;
 
@@ -76,7 +92,7 @@ async function contentScriptHandler(commands) {
     if (textFilter) {
       const lower = textFilter.toLowerCase();
       candidates = candidates.filter((el) => {
-        const t = (el.innerText || el.textContent || "").toLowerCase();
+        const t = searchableText(el);
         return t.includes(lower);
       });
       if (candidates.length === 0)
@@ -240,6 +256,41 @@ async function contentScriptHandler(commands) {
   // ===================================================================
 
   function executeOp(op, params) {
+    function assertMatch(actual, expected, mode = "equals", label = "value") {
+      const actualStr = String(actual ?? "");
+      const expectedStr = String(expected ?? "");
+      if (mode === "includes") {
+        if (!actualStr.includes(expectedStr)) {
+          throw new Error(`${label} assertion failed: expected to include "${expectedStr}", got "${actualStr}"`);
+        }
+        return true;
+      }
+      if (mode === "regex") {
+        const re = new RegExp(expectedStr);
+        if (!re.test(actualStr)) {
+          throw new Error(`${label} assertion failed: expected regex /${expectedStr}/, got "${actualStr}"`);
+        }
+        return true;
+      }
+      if (actualStr !== expectedStr) {
+        throw new Error(`${label} assertion failed: expected "${expectedStr}", got "${actualStr}"`);
+      }
+      return true;
+    }
+
+    function fieldValueOf(el) {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "select") {
+        const opt = el.options[el.selectedIndex];
+        return { value: el.value, text: opt ? opt.text.trim() : "" };
+      }
+      if (tag === "input" && (el.type === "checkbox" || el.type === "radio")) {
+        return { value: el.value, checked: !!el.checked };
+      }
+      if ("value" in el) return { value: el.value };
+      return { value: el.textContent || "" };
+    }
+
     switch (op) {
       case "click": {
         const el = qs(params.selector, params.index, params.text);
@@ -653,31 +704,99 @@ async function contentScriptHandler(commands) {
 
       case "get-value": {
         const el = qs(params.selector, params.index);
+        const value = fieldValueOf(el);
+        return { selector: params.selector, ...value };
+      }
+
+      case "assert-url": {
+        const expected = params.expected;
+        const mode = params.mode || "includes";
+        if (!expected) throw new Error("Missing 'expected' parameter");
+        assertMatch(location.href, expected, mode, "url");
+        return { ok: true, url: location.href, mode, expected };
+      }
+
+      case "assert-field-value": {
+        const selector = params.selector;
+        const expected = params.expected;
+        const mode = params.mode || "equals";
+        if (!selector) throw new Error("Missing 'selector' parameter");
+        if (expected === undefined || expected === null) {
+          throw new Error("Missing 'expected' parameter");
+        }
+        const el = qs(selector, params.index, params.text);
+        const fv = fieldValueOf(el);
+        const actual = params.byText ? (fv.text ?? fv.value ?? "") : (fv.value ?? "");
+        assertMatch(actual, expected, mode, "field");
+        return { ok: true, selector, mode, expected, actual };
+      }
+
+      case "set-field": {
+        const selector = params.selector;
+        if (!selector) throw new Error("Missing 'selector' parameter");
+        const value = String(params.value ?? "");
+        const clear = params.clear !== false;
+        const el = qs(selector, params.index, params.text);
         const tag = el.tagName.toLowerCase();
+
         if (tag === "select") {
-          const opt = el.options[el.selectedIndex];
-          return {
-            selector: params.selector,
-            value: el.value,
-            text: opt ? opt.text.trim() : null,
-            selectedIndex: el.selectedIndex,
-          };
+          let matched = false;
+          for (const opt of el.options) {
+            if (opt.value === value || opt.text.trim() === value) {
+              el.value = opt.value;
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) throw new Error(`Option not found for "${value}"`);
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          return { set: selector, value: el.value, method: "select" };
         }
-        if (
-          tag === "input" &&
-          (el.type === "checkbox" || el.type === "radio")
-        ) {
-          return {
-            selector: params.selector,
-            value: el.value,
-            checked: el.checked,
-          };
-        }
+
         if ("value" in el) {
-          return { selector: params.selector, value: el.value };
+          el.focus();
+          if (clear) {
+            el.value = "";
+            el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContent" }));
+          }
+          el.value = value;
+          el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          return { set: selector, value, method: "value" };
         }
-        // contenteditable
-        return { selector: params.selector, value: el.textContent || "" };
+
+        el.focus();
+        if (clear) el.textContent = "";
+        el.textContent = value;
+        el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+        return { set: selector, value, method: "contenteditable" };
+      }
+
+      case "submit-and-assert": {
+        const submitSelector = params.selector || null;
+        if (submitSelector) {
+          const el = qs(submitSelector, params.index, params.text);
+          if (
+            typeof el.requestSubmit === "function" &&
+            el.tagName.toLowerCase() === "form"
+          ) {
+            el.requestSubmit();
+          } else {
+            el.click();
+          }
+          return { submitted: true, selector: submitSelector };
+        }
+        const active = document.activeElement;
+        if (active && active.form && typeof active.form.requestSubmit === "function") {
+          active.form.requestSubmit();
+          return { submitted: true, selector: null };
+        }
+        if (active && typeof active.click === "function") {
+          active.click();
+          return { submitted: true, selector: null };
+        }
+        throw new Error("No submit target found. Provide selector.");
       }
 
       case "snapshot": {
@@ -891,6 +1010,55 @@ async function contentScriptHandler(commands) {
             characters: inputText.length,
           },
         });
+      } else if (op === "submit-and-assert") {
+        const submitSelector = params.selector || null;
+        const assertSelector = params.assertSelector || null;
+        const assertUrl = params.assertUrl || null;
+        const mode = params.mode || "includes";
+        const timeout = Number(params.timeout ?? 5) * 1000;
+
+        // Trigger submit
+        executeOp("submit-and-assert", params);
+
+        const start = Date.now();
+        let done = !assertSelector && !assertUrl;
+        while (!done && Date.now() - start < timeout) {
+          if (assertSelector && deepQueryAll(document, assertSelector).length > 0) {
+            done = true;
+            break;
+          }
+          if (assertUrl) {
+            const url = String(location.href || "");
+            if (
+              (mode === "equals" && url === String(assertUrl)) ||
+              (mode === "includes" && url.includes(String(assertUrl))) ||
+              (mode === "regex" && new RegExp(String(assertUrl)).test(url))
+            ) {
+              done = true;
+              break;
+            }
+          }
+          await new Promise((r) => setTimeout(r, 100));
+        }
+
+        if (!done) {
+          results.push({
+            success: false,
+            error: "submit assertion timeout",
+          });
+          break;
+        }
+
+        results.push({
+          success: true,
+          data: {
+            submitted: true,
+            selector: submitSelector,
+            assertSelector: assertSelector || null,
+            assertUrl: assertUrl || null,
+            mode,
+          },
+        });
       } else if (op === "wait") {
         // Wait: sleep or selector polling (async)
         if (params.seconds !== undefined && params.seconds !== null) {
@@ -925,9 +1093,7 @@ async function contentScriptHandler(commands) {
         }
       } else if (
         op === "click" ||
-        op === "dblclick" ||
-        op === "check" ||
-        op === "uncheck"
+        op === "dblclick"
       ) {
         // Interaction ops with full actionability checks
         const el = qs(
@@ -939,6 +1105,29 @@ async function contentScriptHandler(commands) {
           visible: true,
           stable: true,
           receivesEvents: true,
+          enabled: true,
+        });
+        if (!check.pass) {
+          results.push({
+            success: false,
+            error: `${op}: ${check.reason} for "${params.selector}"`,
+          });
+          break;
+        }
+        const data = executeOp(op, params);
+        results.push({ success: true, data });
+      } else if (op === "check" || op === "uncheck") {
+        // Native checkbox/radio inputs are often visually hidden behind labels.
+        // In that case, visibility/hit-test checks are too strict and block
+        // legitimate state changes. Keep strict checks for ARIA controls.
+        const el = qs(params.selector, params.index, params.text);
+        const isNativeToggle =
+          el.tagName.toLowerCase() === "input" &&
+          (el.type === "checkbox" || el.type === "radio");
+        const check = await ensureActionable(el, {
+          visible: !isNativeToggle,
+          stable: !isNativeToggle,
+          receivesEvents: !isNativeToggle,
           enabled: true,
         });
         if (!check.pass) {
@@ -972,8 +1161,11 @@ async function contentScriptHandler(commands) {
         const data = executeOp(op, params);
         results.push({ success: true, data });
       } else if (op === "type" || op === "focus") {
-        // Type/focus: visible + enabled
-        const el = qs(params.selector, params.index, params.text);
+        // Type/focus: visible + enabled.
+        // NOTE: "type" command's params.text is the text to input, not a text
+        // filter for element matching.
+        const textFilter = op === "focus" ? params.text : undefined;
+        const el = qs(params.selector, params.index, textFilter);
         const check = await ensureActionable(el, {
           visible: true,
           enabled: op === "type",

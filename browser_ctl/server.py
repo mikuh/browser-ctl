@@ -198,6 +198,7 @@ _CONTENT_SCRIPT_OPS = frozenset({
 	"text", "html", "attr", "select", "count", "snapshot",
 	"is-visible", "get-value",
 	"scroll", "select-option", "drag", "wait",
+	"assert-url", "assert-field-value", "set-field", "submit-and-assert",
 })
 
 

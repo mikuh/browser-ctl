@@ -13,14 +13,14 @@ import { activeTab } from "./actions.js";
 
 export { doClick };
 
-async function doClick(params) {
-  const tab = await activeTab();
+async function doClick(params, context = {}) {
+  const tab = await activeTab(context);
 
   // Single MAIN-world executeScript — everything in one round trip
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: clickHandler,
-    args: [params.selector, params.index, params.text],
+    args: [params.selector ?? null, params.index ?? null, params.text ?? null],
     world: "MAIN",
   });
 
@@ -37,9 +37,21 @@ async function doClick(params) {
     throw new Error(result?.error || "Click failed");
   }
 
-  // If window.open was intercepted, navigate via chrome.tabs
+  // If window.open was intercepted, open in background to avoid
+  // unexpectedly changing active tab context for subsequent commands.
   if (result.capturedUrl) {
-    await chrome.tabs.create({ url: result.capturedUrl, active: true });
+    const popupTab = await chrome.tabs.create({
+      url: result.capturedUrl,
+      active: context.openPopupInBackground !== false,
+    });
+    return {
+      clicked: params.selector || "body",
+      index: params.index ?? 0,
+      total: result.total,
+      text: params.text || null,
+      openedTabId: popupTab?.id ?? null,
+      openedUrl: result.capturedUrl,
+    };
   }
 
   return {
@@ -141,6 +153,25 @@ async function clickHandler(selector, index, textFilter) {
     return results;
   }
 
+  function searchableText(el) {
+    const parts = [];
+    const visible = (el.innerText || el.textContent || "").trim();
+    if (visible) parts.push(visible);
+    const ariaLabel = (el.getAttribute && el.getAttribute("aria-label")) || "";
+    if (ariaLabel) parts.push(ariaLabel);
+    const title = (el.getAttribute && el.getAttribute("title")) || "";
+    if (title) parts.push(title);
+    const placeholder =
+      (el.getAttribute && el.getAttribute("placeholder")) || "";
+    if (placeholder) parts.push(placeholder);
+    const alt = (el.getAttribute && el.getAttribute("alt")) || "";
+    if (alt) parts.push(alt);
+    if ("value" in el && typeof el.value === "string" && el.value) {
+      parts.push(el.value);
+    }
+    return parts.join(" ").toLowerCase();
+  }
+
   // -- Unified element query --
   function qs(sel, idx, tf) {
     if (!sel) return document.body;
@@ -157,10 +188,7 @@ async function clickHandler(selector, index, textFilter) {
 
     if (tf) {
       const lc = tf.toLowerCase();
-      candidates = candidates.filter(
-        (e) =>
-          e.textContent && e.textContent.toLowerCase().includes(lc)
-      );
+      candidates = candidates.filter((e) => searchableText(e).includes(lc));
       if (candidates.length === 0)
         throw new Error(
           `No element matching "${sel}" contains text "${tf}"`

@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import shutil
 import socket
+import subprocess
 import sys
+import time
 
 DEFAULT_PORT = 19876
 _HOST = "127.0.0.1"
@@ -192,3 +196,119 @@ def ensure_server_optimistic() -> None:
 	result = send_raw("ping", {})
 	if not result.get("success") and "Cannot connect" in result.get("error", ""):
 		start_server()
+
+
+def _launch_chrome() -> tuple[bool, str]:
+	"""Try to launch Chrome/Chromium and return (started, method)."""
+	system = platform.system()
+
+	if system == "Darwin":
+		try:
+			subprocess.Popen(
+				["open", "-a", "Google Chrome"],
+				stdout=subprocess.DEVNULL,
+				stderr=subprocess.DEVNULL,
+			)
+			return True, "open -a Google Chrome"
+		except Exception:
+			return False, "open -a Google Chrome"
+
+	if system == "Windows":
+		candidates = [
+			"chrome",
+			r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+			r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+		]
+		for cmd in candidates:
+			try:
+				subprocess.Popen(
+					[cmd],
+					stdout=subprocess.DEVNULL,
+					stderr=subprocess.DEVNULL,
+					creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+				)
+				return True, cmd
+			except Exception:
+				continue
+		return False, "chrome"
+
+	# Linux / other unix-like: try common Chrome/Chromium binaries
+	for cmd in ("google-chrome", "chromium", "chromium-browser"):
+		if shutil.which(cmd) is None:
+			continue
+		try:
+			subprocess.Popen(
+				[cmd],
+				stdout=subprocess.DEVNULL,
+				stderr=subprocess.DEVNULL,
+			)
+			return True, cmd
+		except Exception:
+			continue
+	return False, "google-chrome/chromium"
+
+
+def ensure_ready(timeout: float = 20.0, launch_browser: bool = True) -> dict:
+	"""Ensure bridge server + extension are ready.
+
+	Flow:
+	1) Start server if needed
+	2) Check ping
+	3) If extension disconnected and launch enabled, attempt to launch Chrome
+	4) Poll until timeout for extension connection
+	"""
+	ensure_server_optimistic()
+	result = send_raw("ping", {})
+	if result.get("success") and result.get("data", {}).get("extension"):
+		return {
+			"success": True,
+			"data": {
+				"server": True,
+				"extension": True,
+				"launchedBrowser": False,
+				"waitedSeconds": 0.0,
+			},
+		}
+
+	if not launch_browser:
+		return result
+
+	started, method = _launch_chrome()
+	if not started:
+		return {
+			"success": False,
+			"error": (
+				"Chrome extension not connected and failed to launch browser. "
+				f"Tried: {method}. Run `bctl setup` and ensure extension is loaded."
+			),
+		}
+
+	deadline = time.time() + max(timeout, 1.0)
+	last = result
+	while time.time() < deadline:
+		time.sleep(0.5)
+		last = send_raw("ping", {})
+		if last.get("success") and last.get("data", {}).get("extension"):
+			return {
+				"success": True,
+				"data": {
+					"server": True,
+					"extension": True,
+					"launchedBrowser": True,
+					"launchMethod": method,
+					"waitedSeconds": round(max(0.0, timeout - max(0.0, deadline - time.time())), 1),
+				},
+			}
+
+	return {
+		"success": False,
+		"error": (
+			"Chrome launched but extension is still not connected. "
+			"Open chrome://extensions and ensure Browser-Ctl extension is loaded."
+		),
+		"data": {
+			"launchedBrowser": True,
+			"launchMethod": method,
+			"lastPing": last,
+		},
+	}

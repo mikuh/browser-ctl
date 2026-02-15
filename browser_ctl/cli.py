@@ -62,6 +62,7 @@ CONTENT_SCRIPT_OPS = frozenset({
 	"text", "html", "attr", "select", "count", "snapshot",
 	"is-visible", "get-value",
 	"scroll", "select-option", "drag", "wait",
+	"assert-url", "assert-field-value", "set-field", "submit-and-assert",
 })
 
 
@@ -175,6 +176,29 @@ def build_parser() -> argparse.ArgumentParser:
 		prog="bctl",
 		description="Control your browser from the command line",
 	)
+	parser.add_argument(
+		"--session",
+		default=None,
+		help="Execution session id (default: default)",
+	)
+	parser.add_argument(
+		"--tab",
+		type=int,
+		default=None,
+		help="Target tab id for command execution",
+	)
+	parser.add_argument(
+		"--window",
+		type=int,
+		default=None,
+		help="Target window id (uses active tab in that window)",
+	)
+	parser.add_argument(
+		"--world",
+		choices=["ISOLATED", "MAIN"],
+		default=None,
+		help="Script execution world override for DOM operations",
+	)
 	sub = parser.add_subparsers(dest="command", help="Available commands")
 
 	# -- Navigation --
@@ -261,6 +285,28 @@ def build_parser() -> argparse.ArgumentParser:
 	p.add_argument("selector", help="CSS selector or element ref")
 	p.add_argument("-i", "--index", type=int, default=None, help="Nth matching element (0-based)")
 
+	p = sub.add_parser("assert-url", help="Assert current URL matches expectation")
+	p.add_argument("expected", help="Expected URL value/pattern")
+	p.add_argument(
+		"--mode",
+		choices=["equals", "includes", "regex"],
+		default="includes",
+		help="Assertion mode (default: includes)",
+	)
+
+	p = sub.add_parser("assert-field-value", help="Assert form field value/text")
+	p.add_argument("selector", help="CSS selector or element ref")
+	p.add_argument("expected", help="Expected field value/text")
+	p.add_argument(
+		"--mode",
+		choices=["equals", "includes", "regex"],
+		default="equals",
+		help="Assertion mode (default: equals)",
+	)
+	p.add_argument("--by-text", action="store_true", help="Assert selected option text instead of value")
+	p.add_argument("-i", "--index", type=int, default=None, help="Nth matching element (0-based)")
+	p.add_argument("-t", "--text", default=None, help="Filter by visible text content")
+
 	# -- JavaScript --
 	p = sub.add_parser("eval", help="Execute JavaScript in page context")
 	p.add_argument("code", help="JavaScript code to execute")
@@ -297,6 +343,27 @@ def build_parser() -> argparse.ArgumentParser:
 	p.add_argument("value", help="Option value or text to select")
 	p.add_argument("--text", action="store_true", help="Match by visible text instead of value")
 
+	p = sub.add_parser("set-field", help="Set field value in a generic way")
+	p.add_argument("selector", help="CSS selector or element ref")
+	p.add_argument("value", help="Field value to set")
+	p.add_argument("--no-clear", action="store_true", help="Do not clear before setting value")
+	p.add_argument("-i", "--index", type=int, default=None, help="Nth matching element (0-based)")
+	p.add_argument("-t", "--text", default=None, help="Filter by visible text content")
+
+	p = sub.add_parser("submit-and-assert", help="Submit and assert URL/selector outcome")
+	p.add_argument("selector", nargs="?", default=None, help="Submit target selector (form/button)")
+	p.add_argument("--assert-selector", default=None, help="Selector that should appear after submit")
+	p.add_argument("--assert-url", default=None, help="URL value/pattern expected after submit")
+	p.add_argument(
+		"--mode",
+		choices=["equals", "includes", "regex"],
+		default="includes",
+		help="URL assertion mode (default: includes)",
+	)
+	p.add_argument("--timeout", type=float, default=5, help="Max wait seconds for assertion")
+	p.add_argument("-i", "--index", type=int, default=None, help="Nth matching element (0-based)")
+	p.add_argument("-t", "--text", default=None, help="Filter by visible text content")
+
 	# -- File upload --
 	p = sub.add_parser("upload", help="Upload file(s) to file input")
 	p.add_argument("selector", help="CSS selector for file input")
@@ -322,7 +389,14 @@ def build_parser() -> argparse.ArgumentParser:
 	# -- Server management --
 	sub.add_parser("serve", help="Start bridge server (foreground)")
 	sub.add_parser("ping", help="Check server and extension status")
+	sub.add_parser("capabilities", help="Show extension-supported actions")
+	p = sub.add_parser("ensure-ready", help="Ensure server + extension are ready (auto-launch Chrome)")
+	p.add_argument("--timeout", type=float, default=20, help="Max seconds to wait for extension connection")
+	p.add_argument("--no-launch", action="store_true", help="Do not auto-launch Chrome")
 	sub.add_parser("stop", help="Stop bridge server")
+
+	p = sub.add_parser("self-test", help="Run generic skill smoke tests")
+	p.add_argument("--timeout", type=float, default=20, help="ensure-ready timeout in seconds")
 
 	# -- Batch / Pipe --
 	p = sub.add_parser("pipe", help="Read commands from stdin (one per line, JSONL output)")
@@ -420,6 +494,101 @@ def handle_serve(args):
 	"""Run server in foreground."""
 	from browser_ctl.client import DEFAULT_PORT
 	os.execvp(sys.executable, [sys.executable, "-m", "browser_ctl.server", "--port", str(DEFAULT_PORT)])
+
+
+def handle_ensure_ready(args):
+	"""Ensure bridge server and extension are connected."""
+	result = _client().ensure_ready(timeout=args.timeout, launch_browser=not args.no_launch)
+	print(json.dumps(result, ensure_ascii=False))
+	if not result.get("success"):
+		sys.exit(1)
+
+
+def handle_capabilities(_args):
+	"""Query extension capabilities."""
+	_client().ensure_server_optimistic()
+	result = _client().send_raw("capabilities", {})
+	print(json.dumps(result, ensure_ascii=False))
+	if not result.get("success"):
+		sys.exit(1)
+
+
+def handle_self_test(args):
+	"""Run generic, site-agnostic smoke tests."""
+	def fail(msg: str):
+		print(json.dumps({"success": False, "error": msg}, ensure_ascii=False))
+		sys.exit(1)
+
+	ready = _client().ensure_ready(timeout=args.timeout, launch_browser=True)
+	if not ready.get("success"):
+		print(json.dumps(ready, ensure_ascii=False))
+		sys.exit(1)
+
+	caps = _client().send_raw("capabilities", {})
+	if not caps.get("success"):
+		err = str(caps.get("error", ""))
+		if "Unknown action: capabilities" in err:
+			fail("Connected extension is outdated. Please run `bctl setup` and reload extension from ~/.browser-ctl/extension.")
+		fail(f"capabilities check failed: {err}")
+
+	actions = set(caps.get("data", {}).get("actions", []))
+	required = {"assert-url", "assert-field-value", "set-field", "submit-and-assert"}
+	missing = sorted(required - actions)
+	if missing:
+		fail(f"Extension missing required actions: {missing}. Reload extension from ~/.browser-ctl/extension.")
+
+	html = (
+		"<html><body>"
+		"<h1 id='title'>Skill Smoke</h1>"
+		"<input id='name' />"
+		"<button id='save' onclick=\"document.getElementById('out').textContent=document.getElementById('name').value\">Save</button>"
+		"<div id='out'></div>"
+		"<form id='f' onsubmit=\"event.preventDefault(); location.hash='submitted';\">"
+		"<input id='email' />"
+		"<button id='submit' type='submit'>Submit</button>"
+		"</form>"
+		"</body></html>"
+	)
+	import urllib.parse
+	url = "https://example.com"
+	status_result = _client().send_raw("status", {})
+	if not status_result.get("success"):
+		fail(f"self-test failed at status: {status_result.get('error')}")
+	tab_id = status_result.get("data", {}).get("id")
+	if tab_id is None:
+		fail("self-test failed: status returned no tab id")
+
+	steps = [
+		("navigate", {"url": url}),
+		("assert-url", {"expected": "example.com", "mode": "includes"}),
+		("eval", {"code": f"document.body.innerHTML = {json.dumps(html)}; 'ok'"}),
+		("snapshot", {"interactive": True}),
+		("set-field", {"selector": "#name", "value": "Alice", "clear": True}),
+		("assert-field-value", {"selector": "#name", "expected": "Alice", "mode": "equals"}),
+		("click", {"selector": "#save"}),
+		("text", {"selector": "#out"}),
+		("submit-and-assert", {"selector": "#submit", "assertUrl": "#submitted", "mode": "includes", "timeout": 5}),
+		("assert-url", {"expected": "#submitted", "mode": "includes"}),
+	]
+
+	for action, params in steps:
+		p = dict(params)
+		p["tabId"] = tab_id
+		result = _client().send_raw(action, p)
+		if not result.get("success"):
+			fail(f"self-test failed at {action}: {result.get('error')}")
+		if action == "text":
+			text = str(result.get("data", {}).get("text", "")).strip()
+			if text != "Alice":
+				fail(f"self-test failed: expected #out text 'Alice', got '{text}'")
+
+	print(json.dumps({
+		"success": True,
+		"data": {
+			"selfTest": "passed",
+			"checks": [s[0] for s in steps],
+		},
+	}, ensure_ascii=False))
 
 
 def _get_extension_source_dir() -> str | None:
@@ -593,6 +762,8 @@ _ALIASES = {
 	"dl": "download",
 	"sopt": "select-option",
 	"snap": "snapshot",
+	"ready": "ensure-ready",
+	"caps": "capabilities",
 }
 
 
@@ -645,6 +816,17 @@ def args_to_action_params(cmd: str, args) -> tuple[str, dict]:
 		params = {"selector": args.selector, "index": args.index}
 	elif cmd == "get-value":
 		params = {"selector": args.selector, "index": args.index}
+	elif cmd == "assert-url":
+		params = {"expected": args.expected, "mode": args.mode}
+	elif cmd == "assert-field-value":
+		params = {
+			"selector": args.selector,
+			"expected": args.expected,
+			"mode": args.mode,
+			"byText": args.by_text,
+			"index": args.index,
+			"text": args.text,
+		}
 	elif cmd == "eval":
 		params = {"code": args.code}
 	elif cmd == "tab":
@@ -657,6 +839,24 @@ def args_to_action_params(cmd: str, args) -> tuple[str, dict]:
 		params = {"target": args.target, "amount": args.amount}
 	elif cmd == "select-option":
 		params = {"selector": args.selector, "value": args.value, "byText": args.text}
+	elif cmd == "set-field":
+		params = {
+			"selector": args.selector,
+			"value": args.value,
+			"clear": not args.no_clear,
+			"index": args.index,
+			"text": args.text,
+		}
+	elif cmd == "submit-and-assert":
+		params = {
+			"selector": args.selector,
+			"assertSelector": args.assert_selector,
+			"assertUrl": args.assert_url,
+			"mode": args.mode,
+			"timeout": args.timeout,
+			"index": args.index,
+			"text": args.text,
+		}
 	elif cmd == "upload":
 		files = [os.path.abspath(f) for f in args.files]
 		params = {"selector": args.selector, "files": files}
@@ -670,6 +870,16 @@ def args_to_action_params(cmd: str, args) -> tuple[str, dict]:
 			params = {"seconds": seconds}
 		except ValueError:
 			params = {"selector": args.target, "timeout": args.timeout}
+
+	# Optional execution context (applies to all server-side actions)
+	if getattr(args, "session", None):
+		params["sessionId"] = args.session
+	if getattr(args, "tab", None) is not None:
+		params["tabId"] = args.tab
+	if getattr(args, "window", None) is not None:
+		params["windowId"] = args.window
+	if getattr(args, "world", None):
+		params["world"] = args.world
 	return cmd, params
 
 
@@ -712,6 +922,15 @@ def main():
 		return
 	if cmd == "serve":
 		handle_serve(args)
+		return
+	if cmd == "capabilities":
+		handle_capabilities(args)
+		return
+	if cmd == "ensure-ready":
+		handle_ensure_ready(args)
+		return
+	if cmd == "self-test":
+		handle_self_test(args)
 		return
 	if cmd == "stop":
 		_client().stop_server()
