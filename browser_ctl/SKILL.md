@@ -172,6 +172,20 @@ bctl submit-and-assert "button[type='submit']" --assert-selector ".toast-success
 bctl assert-field-value "input[name='displayName']" "Alice"
 ```
 
+### GitHub Release (minimal, safe pattern)
+When publishing a GitHub release (for workflows that auto-publish to PyPI), keep
+the flow strict and verify each step:
+```bash
+bctl go "https://github.com/<owner>/<repo>/releases/new?tag=vX.Y.Z"   # preselect tag
+bctl text "#ref-picker-releases-tag"                                   # must show "Tag: vX.Y.Z", not "Select tag"
+bctl type "#release_name" "vX.Y.Z"
+bctl type "#release_body" "Release vX.Y.Z ..."
+bctl click "button" -t "Publish release"
+bctl assert-url "/releases/tag/vX.Y.Z" --mode includes
+```
+Then confirm automation side effects separately (e.g. Actions run appears/completes,
+and PyPI shows the new version).
+
 ### Waiting Strategy
 - After navigation: `bctl wait 2-3` or `bctl wait "<selector>" 10`
 - After hover for overlay: `bctl wait 1`
