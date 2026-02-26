@@ -31,6 +31,83 @@ SKILL_TARGETS = {
 	"opencode": os.path.join(os.path.expanduser("~"), ".config", "opencode", "skills"),
 }
 
+_BCTL_HOME = os.path.join(os.path.expanduser("~"), ".browser-ctl")
+
+_MIME_EXT = {
+	"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+	"image/webp": ".webp", "image/svg+xml": ".svg",
+}
+
+
+def _session_file() -> str:
+	return os.path.join(_BCTL_HOME, "session.json")
+
+
+def _read_pinned_tab() -> tuple[int | None, int | None]:
+	"""Read the pinned tab ID and window ID from the session file."""
+	try:
+		with open(_session_file()) as f:
+			data = json.load(f)
+		tab_id = data.get("tabId")
+		window_id = data.get("windowId")
+		return (
+			int(tab_id) if tab_id is not None else None,
+			int(window_id) if window_id is not None else None,
+		)
+	except (OSError, json.JSONDecodeError, ValueError, TypeError):
+		return None, None
+
+
+def _write_pinned_tab(tab_id: int | None, window_id: int | None = None):
+	"""Save or clear the pinned tab/window ID."""
+	path = _session_file()
+	os.makedirs(os.path.dirname(path), exist_ok=True)
+	if tab_id is None:
+		try:
+			os.remove(path)
+		except OSError:
+			pass
+	else:
+		data = {"tabId": int(tab_id)}
+		if window_id is not None:
+			data["windowId"] = int(window_id)
+		with open(path, "w") as f:
+			json.dump(data, f)
+
+
+def _recover_after_disconnect(action: str, params: dict) -> dict:
+	"""Wait for extension to reconnect and verify the command result.
+
+	Some commands (new-tab, navigate) cause Chrome's service worker to restart,
+	which drops the WebSocket. The command often succeeds despite the disconnect.
+	"""
+	import time
+	for _ in range(20):
+		time.sleep(0.5)
+		ping = _client().send_raw("ping", {})
+		if ping.get("success") and ping.get("data", {}).get("extension"):
+			break
+	else:
+		return {"success": False, "error": "Extension did not reconnect after disconnect"}
+
+	if action == "new-tab":
+		tabs_result = _client().send_raw("tabs", {})
+		if tabs_result.get("success"):
+			url = params.get("url", "")
+			tabs = tabs_result.get("data", {}).get("tabs", [])
+			for t in reversed(tabs):
+				if url and url in t.get("url", ""):
+					return {"success": True, "data": {"id": t["id"], "url": t["url"], "title": t.get("title", "")}}
+			if tabs:
+				last = tabs[-1]
+				return {"success": True, "data": {"id": last["id"], "url": last["url"], "title": last.get("title", "")}}
+	elif action == "navigate":
+		status = _client().send_raw("status", params)
+		if status.get("success"):
+			return status
+
+	return {"success": False, "error": "Extension disconnected and recovery failed"}
+
 
 def _parse_command_string(line: str, parser: argparse.ArgumentParser) -> tuple[str, dict] | None:
 	"""Parse a single command string into (action, params). Returns None on parse failure."""
@@ -314,8 +391,9 @@ def build_parser() -> argparse.ArgumentParser:
 	# -- Tabs --
 	sub.add_parser("tabs", help="List all open tabs")
 
-	p = sub.add_parser("tab", help="Switch to a tab by ID")
-	p.add_argument("id", type=int, help="Tab ID")
+	p = sub.add_parser("tab", help="Pin a tab by ID (commands target this tab)")
+	p.add_argument("id", nargs="?", type=int, default=None, help="Tab ID (omit to show current pin)")
+	p.add_argument("--clear", action="store_true", help="Clear pinned tab")
 
 	p = sub.add_parser("new-tab", help="Open a new tab")
 	p.add_argument("url", nargs="?", default=None, help="URL to open")
@@ -426,7 +504,18 @@ def build_parser() -> argparse.ArgumentParser:
 def handle_screenshot(args):
 	"""Screenshot needs special handling for file save."""
 	_client().ensure_server_optimistic()
-	result = _client().send_raw("screenshot", {})
+	params = {}
+	if getattr(args, "tab", None) is not None:
+		params["tabId"] = args.tab
+	else:
+		pinned_tab, pinned_window = _read_pinned_tab()
+		if pinned_tab is not None:
+			params["tabId"] = pinned_tab
+		if pinned_window is not None and getattr(args, "window", None) is None:
+			params["windowId"] = pinned_window
+	if getattr(args, "window", None) is not None:
+		params["windowId"] = args.window
+	result = _client().send_raw("screenshot", params)
 	if not result.get("success"):
 		print(json.dumps(result, ensure_ascii=False))
 		sys.exit(1)
@@ -477,6 +566,12 @@ def handle_download(args):
 	if move_to and result.get("data", {}).get("filename"):
 		import shutil
 		src_path = result["data"]["filename"]
+		mime = result.get("data", {}).get("mime", "")
+		if mime in _MIME_EXT:
+			correct_ext = _MIME_EXT[mime]
+			_, requested_ext = os.path.splitext(move_to)
+			if requested_ext.lower() != correct_ext:
+				move_to = os.path.splitext(move_to)[0] + correct_ext
 		try:
 			shutil.move(src_path, move_to)
 			result["data"]["filename"] = move_to
@@ -830,9 +925,14 @@ def args_to_action_params(cmd: str, args) -> tuple[str, dict]:
 	elif cmd == "eval":
 		params = {"code": args.code}
 	elif cmd == "tab":
-		params = {"id": args.id}
+		params = {}
+		if args.id is not None:
+			params["id"] = args.id
 	elif cmd == "new-tab":
 		params = {"url": args.url}
+		_, pinned_window = _read_pinned_tab()
+		if pinned_window is not None and getattr(args, "window", None) is None:
+			params["windowId"] = pinned_window
 	elif cmd == "close-tab":
 		params = {"id": args.id}
 	elif cmd == "scroll":
@@ -876,6 +976,12 @@ def args_to_action_params(cmd: str, args) -> tuple[str, dict]:
 		params["sessionId"] = args.session
 	if getattr(args, "tab", None) is not None:
 		params["tabId"] = args.tab
+	elif cmd not in ("tab", "tabs", "new-tab", "close-tab"):
+		pinned_tab, pinned_window = _read_pinned_tab()
+		if pinned_tab is not None:
+			params["tabId"] = pinned_tab
+		if pinned_window is not None and getattr(args, "window", None) is None:
+			params["windowId"] = pinned_window
 	if getattr(args, "window", None) is not None:
 		params["windowId"] = args.window
 	if getattr(args, "world", None):
@@ -959,6 +1065,42 @@ def main():
 	# Standard command: parse args, send to server
 	action, params = args_to_action_params(cmd, args)
 
+	# `bctl tab` — pin/unpin/show pinned tab (local-only, no tab activation).
+	if action == "tab":
+		if getattr(args, "clear", False):
+			_write_pinned_tab(None)
+			print(json.dumps({"success": True, "data": {"cleared": True}}, ensure_ascii=False))
+			return
+		tab_id = params.get("id")
+		if tab_id is None:
+			pinned_tab, pinned_window = _read_pinned_tab()
+			if pinned_tab is None:
+				print(json.dumps({"success": True, "data": {"pinned": None}}, ensure_ascii=False))
+			else:
+				print(json.dumps({"success": True, "data": {"pinned": pinned_tab, "windowId": pinned_window}}, ensure_ascii=False))
+			return
+		_client().ensure_server_optimistic()
+		tabs_result = _client().send_raw("tabs", {})
+		if not tabs_result.get("success"):
+			print(json.dumps(tabs_result, ensure_ascii=False))
+			sys.exit(1)
+		tabs = tabs_result.get("data", {}).get("tabs", [])
+		matched = [t for t in tabs if t.get("id") == tab_id]
+		if not matched:
+			result = {"success": False, "error": f"No tab with id: {tab_id}", "code": "TAB_CONTEXT"}
+			print(json.dumps(result, ensure_ascii=False))
+			sys.exit(1)
+		tab_info = matched[0]
+		_write_pinned_tab(tab_id, tab_info.get("windowId"))
+		result = {"success": True, "data": {
+			"id": tab_info["id"],
+			"url": tab_info.get("url", ""),
+			"title": tab_info.get("title", ""),
+			"windowId": tab_info.get("windowId"),
+		}}
+		print(json.dumps(result, ensure_ascii=False))
+		return
+
 	# Handle pure sleep locally — avoids extension round-trip which can
 	# timeout on heavy SPA pages (YouTube, etc.) where the service worker
 	# becomes unresponsive during page load.
@@ -969,7 +1111,34 @@ def main():
 		print(json.dumps({"success": True, "data": {"waited": seconds}}))
 		return
 
-	_client().send_command(action, params)
+	# Send command — with auto-retry on stale pinned tab
+	result = _client().send_raw(action, params)
+	if not result.get("success") and "Cannot connect" in result.get("error", ""):
+		_client().start_server()
+		result = _client().send_raw(action, params)
+
+	# If command failed due to stale pinned tab, clear pin and retry
+	if (not result.get("success")
+		and result.get("code") == "TAB_CONTEXT"
+		and "tabId" in params
+		and getattr(args, "tab", None) is None):
+		_write_pinned_tab(None)
+		del params["tabId"]
+		if "windowId" in params and getattr(args, "window", None) is None:
+			del params["windowId"]
+		result = _client().send_raw(action, params)
+
+	# Recovery for commands that cause service worker restarts.
+	# The action may have succeeded even though the response was lost.
+	if (not result.get("success")
+		and action in ("new-tab", "navigate")
+		and ("disconnected" in result.get("error", "").lower()
+			 or "did not respond" in result.get("error", "").lower())):
+		result = _recover_after_disconnect(action, params)
+
+	print(json.dumps(result, ensure_ascii=False))
+	if not result.get("success"):
+		sys.exit(1)
 
 
 if __name__ == "__main__":

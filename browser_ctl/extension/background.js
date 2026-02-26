@@ -337,7 +337,7 @@ async function handleAction(action, params, ctx) {
 
     // -- Screenshot / Download --
     case "screenshot":
-      return await doScreenshot();
+      return await doScreenshot(params, ctx);
     case "download":
       return await doDownload(params, ctx);
 

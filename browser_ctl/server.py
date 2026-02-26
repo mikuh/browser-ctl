@@ -30,8 +30,8 @@ log = logging.getLogger("bctl.server")
 # State
 # ---------------------------------------------------------------------------
 
-# Currently connected extension WebSocket (only one at a time)
-_ext_ws: web.WebSocketResponse | None = None
+# All connected extension WebSockets
+_ext_connections: list[web.WebSocketResponse] = []
 
 # Pending command futures: request_id -> Future[dict]
 _pending: dict[str, asyncio.Future] = {}
@@ -44,16 +44,10 @@ COMMAND_TIMEOUT = 30  # seconds
 # ---------------------------------------------------------------------------
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
-	global _ext_ws
-
 	ws = web.WebSocketResponse(heartbeat=20)
 	await ws.prepare(request)
-	log.info("Extension connected")
-
-	# Replace any stale connection
-	if _ext_ws is not None and not _ext_ws.closed:
-		await _ext_ws.close()
-	_ext_ws = ws
+	_ext_connections.append(ws)
+	log.info("Extension connected (total: %d)", len(_ext_connections))
 
 	try:
 		async for msg in ws:
@@ -70,9 +64,18 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 			elif msg.type in (WSMsgType.ERROR, WSMsgType.CLOSE):
 				break
 	finally:
-		log.info("Extension disconnected")
-		if _ext_ws is ws:
-			_ext_ws = None
+		if ws in _ext_connections:
+			_ext_connections.remove(ws)
+		log.info("Extension disconnected (total: %d)", len(_ext_connections))
+		# Cancel pending futures only if no connections remain
+		if not _ext_connections:
+			for req_id, fut in list(_pending.items()):
+				if not fut.done():
+					fut.set_result({
+						"success": False,
+						"error": "Extension disconnected while command was pending",
+						"code": "EXT_DISCONNECTED",
+					})
 
 	return ws
 
@@ -95,7 +98,7 @@ async def command_handler(request: web.Request) -> web.Response:
 	if action == "ping":
 		return _json_ok({
 			"server": True,
-			"extension": _ext_ws is not None and not _ext_ws.closed,
+			"extension": _has_extension(),
 		})
 
 	if action == "shutdown":
@@ -104,7 +107,7 @@ async def command_handler(request: web.Request) -> web.Response:
 		return _json_ok({"shutdown": True})
 
 	# Relay to extension
-	if _ext_ws is None or _ext_ws.closed:
+	if not _has_extension():
 		return _json_error("Chrome extension not connected. Open Chrome and check the extension is loaded.")
 
 	result = await _relay_to_extension(action, params)
@@ -129,7 +132,7 @@ async def batch_handler(request: web.Request) -> web.Response:
 	if not commands:
 		return _json_ok({"results": []})
 
-	if _ext_ws is None or _ext_ws.closed:
+	if not _has_extension():
 		return _json_error("Chrome extension not connected. Open Chrome and check the extension is loaded.")
 
 	results: list[dict] = []
@@ -165,7 +168,7 @@ async def batch_handler(request: web.Request) -> web.Response:
 			if action == "ping":
 				result = {"success": True, "data": {
 					"server": True,
-					"extension": _ext_ws is not None and not _ext_ws.closed,
+					"extension": _has_extension(),
 				}}
 			else:
 				result = await _relay_to_extension(action, params)
@@ -180,8 +183,9 @@ async def batch_handler(request: web.Request) -> web.Response:
 async def health_handler(request: web.Request) -> web.Response:
 	return _json_ok({
 		"server": True,
-		"extension": _ext_ws is not None and not _ext_ws.closed,
+		"extension": _has_extension(),
 		"pending_commands": len(_pending),
+		"connections": len(_ext_connections),
 	})
 
 
@@ -202,9 +206,23 @@ _CONTENT_SCRIPT_OPS = frozenset({
 })
 
 
+def _has_extension() -> bool:
+	"""Check if at least one extension is connected."""
+	return any(not ws.closed for ws in _ext_connections)
+
+
+def _get_active_ws() -> web.WebSocketResponse | None:
+	"""Get the first live WebSocket connection."""
+	for ws in _ext_connections:
+		if not ws.closed:
+			return ws
+	return None
+
+
 async def _relay_to_extension(action: str, params: dict) -> dict:
-	"""Send a single command to the extension via WebSocket and await result."""
-	if _ext_ws is None or _ext_ws.closed:
+	"""Send command to extension via WebSocket."""
+	ws = _get_active_ws()
+	if ws is None:
 		return {"success": False, "error": "Chrome extension not connected."}
 
 	req_id = f"r-{uuid.uuid4().hex[:12]}"
@@ -212,7 +230,7 @@ async def _relay_to_extension(action: str, params: dict) -> dict:
 	_pending[req_id] = future
 
 	try:
-		await _ext_ws.send_json({
+		await ws.send_json({
 			"id": req_id,
 			"action": action,
 			"params": params,

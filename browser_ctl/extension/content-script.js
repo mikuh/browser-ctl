@@ -484,13 +484,36 @@ async function contentScriptHandler(commands) {
 
       case "extractUrl": {
         const el = qs(params.selector, params.index);
-        const url =
-          el.src ||
-          el.href ||
-          el.getAttribute("data-src") ||
-          el.currentSrc ||
-          null;
-        return { url, tag: el.tagName.toLowerCase() };
+        const tag = el.tagName.toLowerCase();
+
+        // Canvas: convert to data URL directly
+        if (tag === "canvas") {
+          try {
+            const dataUrl = el.toDataURL("image/png");
+            return { url: dataUrl, tag, type: "canvas" };
+          } catch (e) {
+            return { url: null, tag, type: "canvas", error: "Canvas tainted or empty" };
+          }
+        }
+
+        // Try standard attributes first
+        let url = el.src || el.href || el.getAttribute("data-src") || el.currentSrc || null;
+
+        // Check CSS background-image
+        if (!url) {
+          const bg = getComputedStyle(el).backgroundImage;
+          if (bg && bg !== "none") {
+            const match = bg.match(/url\(["']?(.*?)["']?\)/);
+            if (match) url = match[1];
+          }
+        }
+
+        // Mark blob URLs for async handling in the main loop
+        if (url && url.startsWith("blob:")) {
+          return { url, tag, type: "blob_pending" };
+        }
+
+        return { url, tag, type: url ? "standard" : null };
       }
 
       case "scroll": {
@@ -1190,7 +1213,24 @@ async function contentScriptHandler(commands) {
       } else {
         // All other ops: no actionability checks (query, scroll, etc.)
         const data = executeOp(op, params);
-        results.push({ success: true, data });
+        // Handle async blob URL conversion for extractUrl
+        if (op === "extractUrl" && data.type === "blob_pending") {
+          try {
+            const resp = await fetch(data.url);
+            const blob = await resp.blob();
+            const dataUrl = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(blob);
+            });
+            results.push({ success: true, data: { url: dataUrl, tag: data.tag, type: "blob" } });
+          } catch (e) {
+            results.push({ success: true, data: { url: data.url, tag: data.tag, type: "blob", error: "Failed to convert blob URL" } });
+          }
+        } else {
+          results.push({ success: true, data });
+        }
       }
     } catch (e) {
       results.push({ success: false, error: String(e.message || e) });

@@ -21,7 +21,13 @@ export async function activeTab(context = {}) {
   if (context.windowId !== undefined && context.windowId !== null) {
     query.windowId = context.windowId;
   } else {
-    query.currentWindow = true;
+    // In service workers, currentWindow is unreliable — use lastFocusedWindow
+    const focusedWindow = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+    if (focusedWindow) {
+      query.windowId = focusedWindow.id;
+    } else {
+      query.currentWindow = true;
+    }
   }
 
   const [tab] = await chrome.tabs.query(query);
@@ -192,7 +198,11 @@ export async function doNavigate(params, context = extractExecutionContext(param
   if (!url) throw new Error("Missing 'url' parameter");
   const tab = await activeTab(context);
   await chrome.tabs.update(tab.id, { url });
-  await waitForTabLoad(tab.id);
+  // Short wait — avoid long blocking that causes SW termination
+  const loadResult = await waitForTabLoad(tab.id, 5000);
+  if (!loadResult.loaded) {
+    return { url, title: "" };
+  }
   const updated = await getTabOrThrow(tab.id);
   return { url: updated.url, title: updated.title };
 }
@@ -200,7 +210,10 @@ export async function doNavigate(params, context = extractExecutionContext(param
 export async function doBack(params = {}, context = extractExecutionContext(params)) {
   const tab = await activeTab(context);
   await chrome.tabs.goBack(tab.id);
-  await waitForTabLoad(tab.id);
+  const loadResult = await waitForTabLoad(tab.id, 5000);
+  if (!loadResult.loaded) {
+    return { url: tab.url, title: tab.title };
+  }
   const updated = await getTabOrThrow(tab.id);
   return { url: updated.url, title: updated.title };
 }
@@ -208,7 +221,10 @@ export async function doBack(params = {}, context = extractExecutionContext(para
 export async function doForward(params = {}, context = extractExecutionContext(params)) {
   const tab = await activeTab(context);
   await chrome.tabs.goForward(tab.id);
-  await waitForTabLoad(tab.id);
+  const loadResult = await waitForTabLoad(tab.id, 5000);
+  if (!loadResult.loaded) {
+    return { url: tab.url, title: tab.title };
+  }
   const updated = await getTabOrThrow(tab.id);
   return { url: updated.url, title: updated.title };
 }
@@ -216,7 +232,10 @@ export async function doForward(params = {}, context = extractExecutionContext(p
 export async function doReload(params = {}, context = extractExecutionContext(params)) {
   const tab = await activeTab(context);
   await chrome.tabs.reload(tab.id);
-  await waitForTabLoad(tab.id);
+  const loadResult = await waitForTabLoad(tab.id, 5000);
+  if (!loadResult.loaded) {
+    return { url: tab.url, title: tab.title };
+  }
   const updated = await getTabOrThrow(tab.id);
   return { url: updated.url, title: updated.title };
 }
@@ -256,8 +275,16 @@ export async function doSwitchTab(params) {
 }
 
 export async function doNewTab(params) {
-  const tab = await chrome.tabs.create({ url: params.url || "about:blank" });
-  if (params.url) await waitForTabLoad(tab.id);
+  const createOpts = { url: params.url || "about:blank" };
+  if (params.windowId) createOpts.windowId = params.windowId;
+  const tab = await chrome.tabs.create(createOpts);
+  if (params.url) {
+    // Short wait only — avoid long blocking that causes SW termination
+    const loadResult = await waitForTabLoad(tab.id, 5000);
+    if (!loadResult.loaded) {
+      return { id: tab.id, url: params.url, title: tab.title || "" };
+    }
+  }
   const updated = await getTabOrThrow(tab.id);
   return { id: updated.id, url: updated.url, title: updated.title };
 }
@@ -277,39 +304,46 @@ export async function doStatus(params = {}, context = extractExecutionContext(pa
   return { url: tab.url, title: tab.title, id: tab.id };
 }
 
-export async function doScreenshot() {
+export async function doScreenshot(params = {}, context = extractExecutionContext(params)) {
+  const tab = await activeTab(context);
+  // If targeting a specific tab (pinned), always use CDP — works even when not visible
+  if (context.tabId !== undefined && context.tabId !== null) {
+    return await screenshotViaCDP(tab.id);
+  }
   try {
     const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "png" });
     const base64 = dataUrl.replace(/^data:image\/png;base64,/, "");
     return { format: "png", base64 };
   } catch (_) {
-    // captureVisibleTab fails when Chrome is minimized — use CDP fallback
-    return await screenshotViaCDP();
+    return await screenshotViaCDP(tab.id);
   }
 }
 
-async function screenshotViaCDP() {
-  const tab = await activeTab();
+async function screenshotViaCDP(tabId) {
+  if (tabId === undefined || tabId === null) {
+    const tab = await activeTab();
+    tabId = tab.id;
+  }
   try {
-    await chrome.debugger.attach({ tabId: tab.id }, "1.3");
+    await chrome.debugger.attach({ tabId }, "1.3");
   } catch (e) {
     if (e.message?.includes("Another debugger")) {
       throw new Error(
-        "screenshot: window is minimized and DevTools is open. Close DevTools or restore the window."
+        "screenshot: DevTools is open on this tab. Close DevTools or use a different tab."
       );
     }
     throw new Error("screenshot: cannot capture — " + (e.message || e));
   }
   try {
     const result = await chrome.debugger.sendCommand(
-      { tabId: tab.id },
+      { tabId },
       "Page.captureScreenshot",
       { format: "png" }
     );
     return { format: "png", base64: result.data };
   } finally {
     try {
-      await chrome.debugger.detach({ tabId: tab.id });
+      await chrome.debugger.detach({ tabId });
     } catch (_) {
       // ignore detach errors
     }
@@ -335,6 +369,7 @@ export async function doDownload(params, context = extractExecutionContext(param
   if (!downloadUrl)
     throw new Error("Missing 'url' or 'selector' parameter");
 
+  // data: URLs can be downloaded directly by Chrome
   const downloadId = await new Promise((resolve, reject) => {
     chrome.downloads.download(
       {
