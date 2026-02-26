@@ -11,6 +11,22 @@ import { contentScriptHandler } from "./content-script.js";
 // Shared helpers
 // =========================================================================
 
+/**
+ * Get the ID of the last-focused normal Chrome window.
+ * Returns null when Chrome has no normal windows (e.g. background-only on macOS).
+ */
+async function getLastFocusedNormalWindowId() {
+  try {
+    const win = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+    if (win && win.id !== chrome.windows.WINDOW_ID_NONE) return win.id;
+  } catch (_) {}
+  try {
+    const all = await chrome.windows.getAll({ windowTypes: ["normal"] });
+    if (all.length > 0) return all[0].id;
+  } catch (_) {}
+  return null;
+}
+
 /** Get the currently active tab. */
 export async function activeTab(context = {}) {
   if (context.tabId !== undefined && context.tabId !== null) {
@@ -21,10 +37,9 @@ export async function activeTab(context = {}) {
   if (context.windowId !== undefined && context.windowId !== null) {
     query.windowId = context.windowId;
   } else {
-    // In service workers, currentWindow is unreliable — use lastFocusedWindow
-    const focusedWindow = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
-    if (focusedWindow) {
-      query.windowId = focusedWindow.id;
+    const windowId = await getLastFocusedNormalWindowId();
+    if (windowId !== null) {
+      query.windowId = windowId;
     } else {
       query.currentWindow = true;
     }
@@ -196,9 +211,26 @@ export async function doBatch(params, context = extractExecutionContext(params))
 export async function doNavigate(params, context = extractExecutionContext(params)) {
   const url = params.url;
   if (!url) throw new Error("Missing 'url' parameter");
-  const tab = await activeTab(context);
+
+  let tab;
+  try {
+    tab = await activeTab(context);
+  } catch (_) {
+    // No active tab / no window — create a new window with the URL
+    const newWindow = await chrome.windows.create({ url });
+    const tabs = await chrome.tabs.query({ active: true, windowId: newWindow.id });
+    tab = tabs[0];
+    if (tab) {
+      const loadResult = await waitForTabLoad(tab.id, 5000);
+      if (loadResult.loaded) {
+        const updated = await getTabOrThrow(tab.id);
+        return { url: updated.url, title: updated.title };
+      }
+    }
+    return { url, title: "" };
+  }
+
   await chrome.tabs.update(tab.id, { url });
-  // Short wait — avoid long blocking that causes SW termination
   const loadResult = await waitForTabLoad(tab.id, 5000);
   if (!loadResult.loaded) {
     return { url, title: "" };
@@ -246,7 +278,11 @@ export async function doReload(params = {}, context = extractExecutionContext(pa
 
 export async function doTabs() {
   const tabs = await chrome.tabs.query({});
-  const focusedWindow = await chrome.windows.getLastFocused();
+  let focusedWindowId = null;
+  try {
+    const focusedWindow = await chrome.windows.getLastFocused();
+    focusedWindowId = focusedWindow?.id ?? null;
+  } catch (_) {}
   return {
     tabs: tabs.map((t) => ({
       id: t.id,
@@ -255,7 +291,7 @@ export async function doTabs() {
       active: t.active,
       windowId: t.windowId,
     })),
-    focusedWindowId: focusedWindow.id,
+    focusedWindowId,
   };
 }
 
@@ -275,11 +311,38 @@ export async function doSwitchTab(params) {
 }
 
 export async function doNewTab(params) {
-  const createOpts = { url: params.url || "about:blank" };
-  if (params.windowId) createOpts.windowId = params.windowId;
-  const tab = await chrome.tabs.create(createOpts);
+  const url = params.url || "about:blank";
+  const createOpts = { url };
+  if (params.windowId) {
+    createOpts.windowId = params.windowId;
+  } else {
+    const windowId = await getLastFocusedNormalWindowId();
+    if (windowId !== null) {
+      createOpts.windowId = windowId;
+    }
+  }
+
+  let tab;
+  try {
+    tab = await chrome.tabs.create(createOpts);
+  } catch (_) {
+    // No window available — create a new window with the tab
+    const newWindow = await chrome.windows.create({ url });
+    const tabs = await chrome.tabs.query({ active: true, windowId: newWindow.id });
+    tab = tabs[0];
+    if (!tab) throw new Error("Failed to create new window");
+    if (params.url) {
+      const loadResult = await waitForTabLoad(tab.id, 5000);
+      if (!loadResult.loaded) {
+        return { id: tab.id, url: params.url, title: tab.title || "" };
+      }
+      const updated = await getTabOrThrow(tab.id);
+      return { id: updated.id, url: updated.url, title: updated.title };
+    }
+    return { id: tab.id, url: tab.url, title: tab.title || "" };
+  }
+
   if (params.url) {
-    // Short wait only — avoid long blocking that causes SW termination
     const loadResult = await waitForTabLoad(tab.id, 5000);
     if (!loadResult.loaded) {
       return { id: tab.id, url: params.url, title: tab.title || "" };
@@ -300,7 +363,12 @@ export async function doCloseTab(params, context = extractExecutionContext(param
 // =========================================================================
 
 export async function doStatus(params = {}, context = extractExecutionContext(params)) {
-  const tab = await activeTab(context);
+  let tab;
+  try {
+    tab = await activeTab(context);
+  } catch (_) {
+    return { url: null, title: null, id: null, noWindow: true };
+  }
   return { url: tab.url, title: tab.title, id: tab.id };
 }
 

@@ -408,7 +408,16 @@ async function contentScriptHandler(commands) {
         while (target.shadowRoot && target.shadowRoot.activeElement) {
           target = target.shadowRoot.activeElement;
         }
-        const opts = { key, bubbles: true, cancelable: true };
+        // Map key names to legacy keyCode values for framework compatibility
+        // (Vue 2 @keydown.enter checks e.keyCode === 13, not e.key)
+        const KEY_CODES = {
+          Enter: 13, Tab: 9, Escape: 27, Backspace: 8, Delete: 46,
+          ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39,
+          Home: 36, End: 35, PageUp: 33, PageDown: 34,
+          " ": 32, Space: 32,
+        };
+        const keyCode = KEY_CODES[key] ?? (key.length === 1 ? key.charCodeAt(0) : 0);
+        const opts = { key, keyCode, which: keyCode, bubbles: true, cancelable: true };
         const cancelled = !target.dispatchEvent(
           new KeyboardEvent("keydown", opts)
         );
@@ -1139,11 +1148,17 @@ async function contentScriptHandler(commands) {
           enabled: true,
         });
         if (!check.pass) {
-          results.push({
-            success: false,
-            error: `${op}: ${check.reason} for "${params.selector}"`,
-          });
-          break;
+          // If failure is only hit-test related, force-click anyway
+          const isHitTestOnly = check.reason.includes("pointer events") ||
+            check.reason.includes("obscured") ||
+            check.reason.includes("no element at coordinates");
+          if (!isHitTestOnly) {
+            results.push({
+              success: false,
+              error: `${op}: ${check.reason} for "${params.selector}"`,
+            });
+            break;
+          }
         }
         const data = executeOp(op, params);
         results.push({ success: true, data });
@@ -1183,11 +1198,16 @@ async function contentScriptHandler(commands) {
           receivesEvents: true,
         });
         if (!check.pass) {
-          results.push({
-            success: false,
-            error: `${op}: ${check.reason} for "${params.selector || params.source}"`,
-          });
-          break;
+          const isHitTestOnly = check.reason.includes("pointer events") ||
+            check.reason.includes("obscured") ||
+            check.reason.includes("no element at coordinates");
+          if (!isHitTestOnly) {
+            results.push({
+              success: false,
+              error: `${op}: ${check.reason} for "${params.selector || params.source}"`,
+            });
+            break;
+          }
         }
         const data = executeOp(op, params);
         results.push({ success: true, data });

@@ -59,9 +59,10 @@ bctl click <sel> [-i N] [-t text]    Click element; -t filters by visible text
 bctl dblclick <sel> [-i N] [-t text] Double-click
 bctl hover <sel> [-i N] [-t text]    Hover (triggers mouseover)
 bctl focus <sel> [-i N] [-t text]    Focus element
-bctl type <sel> <text>               Type text (replaces existing; React-compatible)
+bctl type <sel> <text>               Type text (replaces existing; React/Vue compatible)
 bctl input-text <sel> <text> [--clear] [--delay ms]  Char-by-char (rich editors)
 bctl press <key>                     Press key: Enter, Escape, Tab, ArrowDown, etc.
+                                     (includes keyCode/which for Vue 2 & jQuery compat)
 bctl check <sel> [-i N] [-t text]    Check checkbox/radio
 bctl uncheck <sel> [-i N] [-t text]  Uncheck checkbox
 bctl scroll <dir|sel> [n]            Scroll: up/down/top/bottom/<selector> [pixels]
@@ -186,6 +187,15 @@ bctl assert-url "/releases/tag/vX.Y.Z" --mode includes
 Then confirm automation side effects separately (e.g. Actions run appears/completes,
 and PyPI shows the new version).
 
+### Chat / AI UIs
+For chat interfaces (ChatGPT, Gemini, internal AI tools, etc.), use `type` + `press Enter`
+as the simplest send pattern — no need to find the send button:
+```bash
+bctl type "#input" "your prompt here"
+bctl press Enter
+```
+Then poll for completion: `bctl wait 5 && bctl count ".response"` in a loop.
+
 ### Waiting Strategy
 - After navigation: `bctl wait 2-3` or `bctl wait "<selector>" 10`
 - After hover for overlay: `bctl wait 1`
@@ -288,6 +298,13 @@ Use this sequence on any site:
 - `eval` with `input.value = ...` or `.click()` bypasses SPA framework state — use `type`/`click` instead
 - `screenshot` captures visible viewport only — scroll for full-page capture
 - Without `-i`, `click` always hits the FIRST match — use `count` to check first
+
+## Resilience Notes
+
+- **`click` auto force-clicks** when the element is visible and enabled but obscured by
+  an overlay or fails hit-test. No need for `eval` workarounds on tricky UIs.
+- **`press` includes `keyCode`/`which`** for all common keys, so `@keydown.enter` handlers
+  in Vue 2, jQuery `.on("keydown")`, and legacy `e.keyCode` checks all work correctly.
 
 ## Error Handling
 

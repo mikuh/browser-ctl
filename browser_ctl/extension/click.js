@@ -26,8 +26,12 @@ async function doClick(params, context = {}) {
 
   const result = results[0]?.result;
   if (!result || !result.success) {
-    // If actionability failed, try CDP fallback for fully trusted events
-    if (result?.cx !== undefined && result?.cy !== undefined && result?.error?.includes("obscured")) {
+    // If actionability failed due to hit-test (obscured / no element at coords),
+    // try CDP fallback for fully trusted events
+    const isHitTestFailure = result?.error?.includes("pointer events") ||
+      result?.error?.includes("obscured") ||
+      result?.error?.includes("no element at coordinates");
+    if (isHitTestFailure && result?.cx !== undefined && result?.cy !== undefined) {
       try {
         return await clickViaCDP(tab.id, result.cx, result.cy, params);
       } catch (_) {
@@ -365,7 +369,51 @@ async function clickHandler(selector, index, textFilter) {
       return { success: true, total, capturedUrl };
     }
 
-    // All retries exhausted
+    // All retries exhausted — if failure is purely hit-test related,
+    // force-click anyway (the element is visible, stable, enabled, just obscured)
+    const isHitTestOnly = lastReason.includes("pointer events") ||
+      lastReason.includes("obscured") ||
+      lastReason.includes("no element at coordinates");
+
+    if (isHitTestOnly) {
+      const origOpen = window.open;
+      let capturedUrl = null;
+      window.open = function (url) {
+        if (url && typeof url === "string" && url.startsWith("http")) {
+          capturedUrl = url;
+        }
+        return null;
+      };
+
+      try {
+        const rect = el.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const mOpts = {
+          bubbles: true,
+          cancelable: true,
+          clientX: cx,
+          clientY: cy,
+          button: 0,
+          view: window,
+        };
+        el.dispatchEvent(
+          new PointerEvent("pointerdown", { ...mOpts, pointerId: 1 })
+        );
+        el.dispatchEvent(new MouseEvent("mousedown", mOpts));
+        el.dispatchEvent(
+          new PointerEvent("pointerup", { ...mOpts, pointerId: 1 })
+        );
+        el.dispatchEvent(new MouseEvent("mouseup", mOpts));
+        el.click();
+        await new Promise((r) => setTimeout(r, 50));
+      } finally {
+        window.open = origOpen;
+      }
+
+      return { success: true, total, capturedUrl, forced: true };
+    }
+
     return {
       success: false,
       error: `click: actionability check failed for "${selector}": ${lastReason}`,
