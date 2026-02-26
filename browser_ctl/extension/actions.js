@@ -278,9 +278,42 @@ export async function doStatus(params = {}, context = extractExecutionContext(pa
 }
 
 export async function doScreenshot() {
-  const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "png" });
-  const base64 = dataUrl.replace(/^data:image\/png;base64,/, "");
-  return { format: "png", base64 };
+  try {
+    const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: "png" });
+    const base64 = dataUrl.replace(/^data:image\/png;base64,/, "");
+    return { format: "png", base64 };
+  } catch (_) {
+    // captureVisibleTab fails when Chrome is minimized — use CDP fallback
+    return await screenshotViaCDP();
+  }
+}
+
+async function screenshotViaCDP() {
+  const tab = await activeTab();
+  try {
+    await chrome.debugger.attach({ tabId: tab.id }, "1.3");
+  } catch (e) {
+    if (e.message?.includes("Another debugger")) {
+      throw new Error(
+        "screenshot: window is minimized and DevTools is open. Close DevTools or restore the window."
+      );
+    }
+    throw new Error("screenshot: cannot capture — " + (e.message || e));
+  }
+  try {
+    const result = await chrome.debugger.sendCommand(
+      { tabId: tab.id },
+      "Page.captureScreenshot",
+      { format: "png" }
+    );
+    return { format: "png", base64: result.data };
+  } finally {
+    try {
+      await chrome.debugger.detach({ tabId: tab.id });
+    } catch (_) {
+      // ignore detach errors
+    }
+  }
 }
 
 // =========================================================================

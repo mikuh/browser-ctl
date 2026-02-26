@@ -116,20 +116,26 @@ async function contentScriptHandler(commands) {
   // Actionability checks (inspired by Playwright)
   // ===================================================================
 
+  const pageHidden = document.hidden;
+
   function checkVisible(el) {
     if (el === document.body || el === document.documentElement) return true;
     const style = getComputedStyle(el);
     if (style.display === "contents") return true;
-    if (
-      !el.offsetParent &&
-      style.position !== "fixed" &&
-      style.position !== "sticky"
-    )
-      return false;
     if (style.display === "none" || style.visibility === "hidden") return false;
     if (parseFloat(style.opacity) === 0) return false;
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return false;
+    // offsetParent / getBoundingClientRect are unreliable when page is hidden
+    // (Chrome minimized) — skip layout-dependent checks in that case
+    if (!pageHidden) {
+      if (
+        !el.offsetParent &&
+        style.position !== "fixed" &&
+        style.position !== "sticky"
+      )
+        return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return false;
+    }
     return true;
   }
 
@@ -168,7 +174,8 @@ async function contentScriptHandler(commands) {
       if (checks.enabled && el.disabled) continue;
 
       // Stable check (two rAF frames, bounding box unchanged)
-      if (checks.stable) {
+      // rAF callbacks are paused when page is hidden (Chrome minimized) — skip
+      if (checks.stable && !pageHidden) {
         const rect1 = el.getBoundingClientRect();
         const stable = await new Promise((resolve) => {
           requestAnimationFrame(() => {
@@ -190,7 +197,8 @@ async function contentScriptHandler(commands) {
       el.scrollIntoView({ block: "center", behavior: "instant" });
 
       // Receives events check (hit-testing)
-      if (checks.receivesEvents) {
+      // elementFromPoint returns null when page is hidden — skip
+      if (checks.receivesEvents && !pageHidden) {
         const rect = el.getBoundingClientRect();
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
@@ -207,8 +215,8 @@ async function contentScriptHandler(commands) {
     if (checks.enabled && el.disabled)
       return { pass: false, reason: "element is disabled" };
 
-    // Check hit-test for reason
-    if (checks.receivesEvents) {
+    // Check hit-test for reason (skip when page is hidden)
+    if (checks.receivesEvents && !pageHidden) {
       el.scrollIntoView({ block: "center", behavior: "instant" });
       const rect = el.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;

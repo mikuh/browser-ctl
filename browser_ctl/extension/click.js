@@ -206,21 +206,27 @@ async function clickHandler(selector, index, textFilter) {
     return candidates[0];
   }
 
+  const pageHidden = document.hidden;
+
   // -- Actionability helpers --
   function checkVisible(el) {
     if (el === document.body || el === document.documentElement) return true;
     const style = getComputedStyle(el);
     if (style.display === "contents") return true;
-    if (
-      !el.offsetParent &&
-      style.position !== "fixed" &&
-      style.position !== "sticky"
-    )
-      return false;
     if (style.display === "none" || style.visibility === "hidden") return false;
     if (parseFloat(style.opacity) === 0) return false;
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return false;
+    // offsetParent / getBoundingClientRect are unreliable when page is hidden
+    // (Chrome minimized) — skip layout-dependent checks in that case
+    if (!pageHidden) {
+      if (
+        !el.offsetParent &&
+        style.position !== "fixed" &&
+        style.position !== "sticky"
+      )
+        return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return false;
+    }
     return true;
   }
 
@@ -284,10 +290,13 @@ async function clickHandler(selector, index, textFilter) {
       }
 
       // 3. Stable (not animating)
-      const stable = await waitForStable(el);
-      if (!stable) {
-        lastReason = "element is not stable (animating)";
-        continue;
+      // rAF callbacks are paused when page is hidden (Chrome minimized) — skip
+      if (!pageHidden) {
+        const stable = await waitForStable(el);
+        if (!stable) {
+          lastReason = "element is not stable (animating)";
+          continue;
+        }
       }
 
       // 4. Scroll into view
@@ -303,10 +312,13 @@ async function clickHandler(selector, index, textFilter) {
       lastCy = cy;
 
       // 6. Hit-test: verify element receives pointer events
-      const hit = hitTest(el, cx, cy);
-      if (!hit.pass) {
-        lastReason = `element does not receive pointer events: ${hit.reason}`;
-        continue;
+      // elementFromPoint returns null when page is hidden — skip
+      if (!pageHidden) {
+        const hit = hitTest(el, cx, cy);
+        if (!hit.pass) {
+          lastReason = `element does not receive pointer events: ${hit.reason}`;
+          continue;
+        }
       }
 
       // All checks passed — perform the click
